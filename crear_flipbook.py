@@ -808,13 +808,16 @@ class CreadorFlipbook:
         self.tab_preparar = ttk.Frame(self.notebook)
         self.tab_flipbook = ttk.Frame(self.notebook)
         self.tab_periodicos = ttk.Frame(self.notebook)
+        self.tab_dividir = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_preparar, text="1. Preparar PDF")
         self.notebook.add(self.tab_flipbook, text="2. Generar flipbook")
         self.notebook.add(self.tab_periodicos, text="3. Mis periódicos")
+        self.notebook.add(self.tab_dividir, text="✂ Dividir PDF")
 
         self._construir_tab_flipbook(self.tab_flipbook)
         self._construir_tab_periodicos(self.tab_periodicos)
         self._construir_tab_preparar(self.tab_preparar)
+        self._construir_tab_dividir(self.tab_dividir)
 
         # Limpiar la vista previa temporal al cerrar la ventana
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -992,6 +995,7 @@ class CreadorFlipbook:
         cont = ttk.Frame(parent, padding="12")
         cont.pack(fill=tk.BOTH, expand=True)
         cont.columnconfigure(0, weight=1)
+        cont.columnconfigure(2, weight=0)  # columna de la miniatura
         cont.rowconfigure(2, weight=1)
 
         ttk.Label(cont, text="Añade los documentos (Word o PDF) y ponlos en el "
@@ -1011,6 +1015,21 @@ class CreadorFlipbook:
         ttk.Button(orden, text="🔽 Bajar", width=12, command=self._preparar_bajar).pack(pady=2)
         ttk.Button(orden, text="🗑 Quitar", width=12, command=self._preparar_quitar).pack(pady=2)
 
+        # Miniatura del archivo seleccionado
+        self.preparar_miniatura = ttk.Label(cont, text="(selecciona un archivo)",
+                                             anchor=tk.CENTER, relief="solid",
+                                             borderwidth=1, width=24)
+        self.preparar_miniatura.grid(row=2, column=2, sticky=(tk.N, tk.S), padx=(8, 0))
+        self._mini_photo = None       # referencia viva del PhotoImage
+        self._mini_pedido = 0         # para descartar miniaturas obsoletas
+        self.lista_preparar.bind("<<ListboxSelect>>", self._preparar_miniatura_sel)
+        # Arrastrar para reordenar
+        self.lista_preparar.bind("<Button-1>", self._preparar_drag_inicio)
+        self.lista_preparar.bind("<B1-Motion>", self._preparar_drag_mueve)
+        self.lista_preparar.bind("<ButtonRelease-1>", self._preparar_drag_fin)
+        self._drag_idx = None
+        self._dragging = False
+
         self.preparar_estado = ttk.Label(cont, text="", foreground="blue")
         self.preparar_estado.grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(6, 2))
         self.preparar_progress = ttk.Progressbar(cont, mode="indeterminate")
@@ -1020,19 +1039,50 @@ class CreadorFlipbook:
                                    command=self._preparar_unir)
         self.btn_unir.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(4, 0))
 
+        self.pdf_preparado = None
+        self.btn_preparar_abrir = ttk.Button(cont, text="📂 Abrir carpeta",
+                                              command=self._preparar_abrir_carpeta, state=tk.DISABLED)
+        self.btn_preparar_abrir.grid(row=6, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        self.btn_preparar_flipbook = ttk.Button(cont, text="➡ Generar flipbook con este PDF",
+                                                 command=self._preparar_ir_flipbook, state=tk.DISABLED)
+        self.btn_preparar_flipbook.grid(row=7, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(2, 0))
+
     def _preparar_refrescar_lista(self):
         self.lista_preparar.delete(0, tk.END)
         for ruta in self.archivos_preparar:
             self.lista_preparar.insert(tk.END, os.path.basename(ruta))
 
+    def _dir_inicial(self):
+        d = cargar_config().get("ultima_carpeta", "")
+        return d if d and os.path.isdir(d) else os.path.expanduser("~")
+
+    def _recordar_dir(self, ruta):
+        if not ruta:
+            return
+        cfg = cargar_config()
+        cfg["ultima_carpeta"] = os.path.dirname(os.path.abspath(ruta))
+        guardar_config(cfg)
+
     def _preparar_anadir(self):
         rutas = filedialog.askopenfilenames(
             title="Elige documentos (Word o PDF)",
+            initialdir=self._dir_inicial(),
             filetypes=[("Documentos", "*.pdf *.doc *.docx"),
                        ("PDF", "*.pdf"), ("Word", "*.doc *.docx")])
+        if rutas:
+            self._recordar_dir(rutas[0])
+        protegidos = []
         for r in rutas:
+            if r.lower().endswith(".pdf") and pdf_tools.esta_encriptado(r):
+                protegidos.append(os.path.basename(r))
+                continue
             self.archivos_preparar.append(r)
         self._preparar_refrescar_lista()
+        if protegidos:
+            messagebox.showwarning("PDF(s) protegidos",
+                "Estos PDF están protegidos con contraseña y no se han añadido:\n\n"
+                + "\n".join(protegidos) +
+                "\n\nQuítales la contraseña e inténtalo de nuevo.")
 
     def _preparar_sel(self):
         sel = self.lista_preparar.curselection()
@@ -1062,6 +1112,83 @@ class CreadorFlipbook:
             return
         del self.archivos_preparar[i]
         self._preparar_refrescar_lista()
+
+    def _preparar_drag_inicio(self, event):
+        self._drag_idx = self.lista_preparar.nearest(event.y)
+        self._dragging = False
+
+    def _preparar_drag_mueve(self, event):
+        if self._drag_idx is None:
+            return
+        destino = self.lista_preparar.nearest(event.y)
+        if destino < 0 or destino == self._drag_idx or destino >= len(self.archivos_preparar):
+            return
+        self._dragging = True
+        # mover (pop+insert) en vez de swap: correcto aunque el ratón salte varias filas
+        item = self.archivos_preparar.pop(self._drag_idx)
+        self.archivos_preparar.insert(destino, item)
+        self._preparar_refrescar_lista()
+        self.lista_preparar.selection_set(destino)
+        self._drag_idx = destino
+
+    def _preparar_drag_fin(self, event):
+        arrastrado = self._dragging
+        self._drag_idx = None
+        self._dragging = False
+        if arrastrado:
+            self._preparar_miniatura_sel()  # una sola miniatura al soltar
+
+    def _preparar_miniatura_sel(self, event=None):
+        if self._dragging:
+            return  # no generar miniaturas en ráfaga mientras se arrastra
+        sel = self.lista_preparar.curselection()
+        if not sel:
+            return
+        ruta = self.archivos_preparar[sel[0]]
+        self._mini_pedido += 1
+        pedido = self._mini_pedido
+        if not ruta.lower().endswith(".pdf") or not HAS_IMAGETK:
+            self.preparar_miniatura.config(
+                image="", text="Vista previa no disponible\n(se convertirá al unir)")
+            self._mini_photo = None
+            return
+        self.preparar_miniatura.config(image="", text="Cargando…")
+
+        def _w():
+            try:
+                pop = detectar_poppler()
+                kw = {"dpi": 60, "first_page": 1, "last_page": 1}
+                if pop:
+                    kw["poppler_path"] = pop
+                imgs = convert_from_path(ruta, **kw)
+                img = imgs[0]
+                img.thumbnail((180, 240), Image.Resampling.LANCZOS)
+                self.root.after(0, lambda: _set(img, pedido))
+            except Exception:
+                self.root.after(0, lambda: _fail(pedido))
+
+        def _set(img, pedido):
+            if pedido != self._mini_pedido:
+                return  # selección cambió; descartar
+            self._mini_photo = ImageTk.PhotoImage(img)
+            self.preparar_miniatura.config(image=self._mini_photo, text="")
+
+        def _fail(pedido):
+            if pedido != self._mini_pedido:
+                return
+            self.preparar_miniatura.config(image="", text="Vista previa no disponible")
+            self._mini_photo = None
+
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _preparar_abrir_carpeta(self):
+        if self.pdf_preparado:
+            self._abrir_carpeta_ruta(self.pdf_preparado)
+
+    def _preparar_ir_flipbook(self):
+        if self.pdf_preparado:
+            self.pdf_path.set(self.pdf_preparado)
+            self.notebook.select(self.tab_flipbook)
 
     def _preparar_unir(self):
         if not self.archivos_preparar:
@@ -1093,13 +1220,14 @@ class CreadorFlipbook:
         def _ok(ruta):
             self.preparar_progress.stop()
             self.btn_unir.config(state=tk.NORMAL)
-            self.preparar_estado.config(text="PDF creado ✅", foreground="green")
-            self.pdf_path.set(ruta)
-            self.notebook.select(self.tab_flipbook)
+            self.pdf_preparado = ruta
+            self.preparar_estado.config(text=f"✅ PDF guardado en: {ruta}", foreground="green")
+            self.btn_preparar_abrir.config(state=tk.NORMAL)
+            self.btn_preparar_flipbook.config(state=tk.NORMAL)
             messagebox.showinfo("PDF listo",
-                "He unido los documentos en un PDF.\n\n"
-                "Ahora pulsa «Generar vista previa» para verlo y, si te gusta, "
-                "«Generar enlace para la web».")
+                "He unido los documentos en un PDF, guardado en tu carpeta Descargas.\n\n"
+                "Puedes abrir la carpeta, o pulsar «Generar flipbook con este PDF» "
+                "si quieres publicarlo en internet.")
 
         def _err(msg):
             self.preparar_progress.stop()
@@ -1214,10 +1342,11 @@ class CreadorFlipbook:
 
     def seleccionar_pdf(self):
         pdf = filedialog.askopenfilename(
-            title="Selecciona el PDF",
+            title="Selecciona el PDF", initialdir=self._dir_inicial(),
             filetypes=[("PDF", "*.pdf"), ("Todos", "*.*")]
         )
         if pdf:
+            self._recordar_dir(pdf)
             self.pdf_path.set(pdf)
             self.status_label.config(text=f"PDF: {os.path.basename(pdf)}", foreground="green")
     
@@ -1695,6 +1824,117 @@ code {{
     def abrir_instrucciones(self):
         if self.instrucciones_html and os.path.exists(self.instrucciones_html):
             webbrowser.open(f"file://{self.instrucciones_html}")
+
+    def _abrir_carpeta_ruta(self, ruta):
+        carpeta = os.path.dirname(os.path.abspath(ruta))
+        if platform.system() == "Windows":
+            os.startfile(carpeta)
+        elif platform.system() == "Darwin":
+            subprocess.Popen(["open", carpeta])
+        else:
+            subprocess.Popen(["xdg-open", carpeta])
+
+    def _construir_tab_dividir(self, parent):
+        self.dividir_pdf_path = None
+        cont = ttk.Frame(parent, padding="12")
+        cont.pack(fill=tk.BOTH, expand=True)
+        cont.columnconfigure(0, weight=1)
+
+        ttk.Label(cont, text="Divide un PDF: elige el archivo y di qué páginas "
+                             "quieres quedarte.", wraplength=560,
+                  justify=tk.LEFT).grid(row=0, column=0, sticky=tk.W)
+
+        fila = ttk.Frame(cont)
+        fila.grid(row=1, column=0, sticky=tk.W, pady=(6, 4))
+        ttk.Button(fila, text="Examinar…", command=self._dividir_examinar).pack(side=tk.LEFT)
+        self.dividir_info = ttk.Label(fila, text="(ningún PDF elegido)", foreground="gray")
+        self.dividir_info.pack(side=tk.LEFT, padx=8)
+
+        ttk.Label(cont, text="Páginas (ej. 1-4, 7, 9-11; vacío = todas):").grid(
+            row=2, column=0, sticky=tk.W, pady=(6, 0))
+        self.dividir_rango = ttk.Entry(cont, width=40)
+        self.dividir_rango.grid(row=3, column=0, sticky=tk.W, pady=(2, 4))
+
+        self.dividir_una = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cont, text="Una página por archivo (trocear todo)",
+                        variable=self.dividir_una).grid(row=4, column=0, sticky=tk.W)
+
+        self.dividir_estado = ttk.Label(cont, text="", foreground="blue")
+        self.dividir_estado.grid(row=5, column=0, sticky=tk.W, pady=(6, 2))
+        self.dividir_progress = ttk.Progressbar(cont, mode="indeterminate")
+        self.dividir_progress.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=2)
+
+        self.btn_dividir = ttk.Button(cont, text="✂ Dividir", command=self._dividir_ejecutar)
+        self.btn_dividir.grid(row=7, column=0, sticky=tk.W, pady=(4, 0))
+        self.btn_dividir_abrir = ttk.Button(cont, text="📂 Abrir carpeta",
+                                            command=self._dividir_abrir_carpeta, state=tk.DISABLED)
+        self.btn_dividir_abrir.grid(row=8, column=0, sticky=tk.W, pady=(4, 0))
+        self._dividir_ultima_salida = None
+
+    def _dividir_examinar(self):
+        ruta = filedialog.askopenfilename(title="Elige un PDF",
+                                          initialdir=self._dir_inicial(),
+                                          filetypes=[("PDF", "*.pdf")])
+        if not ruta:
+            return
+        self._recordar_dir(ruta)
+        if pdf_tools.esta_encriptado(ruta):
+            messagebox.showwarning("PDF protegido",
+                f"El PDF «{os.path.basename(ruta)}» está protegido con contraseña; "
+                "quítasela e inténtalo de nuevo.")
+            return
+        try:
+            n = pdf_tools.paginas_de_pdf(ruta)
+        except Exception as e:
+            messagebox.showwarning("No se pudo leer", str(e))
+            return
+        self.dividir_pdf_path = ruta
+        self.dividir_info.config(text=f"{os.path.basename(ruta)} — {n} páginas",
+                                 foreground="black")
+
+    def _dividir_ejecutar(self):
+        if not self.dividir_pdf_path:
+            messagebox.showinfo("Sin PDF", "Elige un PDF primero.")
+            return
+        ruta = self.dividir_pdf_path
+        texto = self.dividir_rango.get()
+        una = self.dividir_una.get()
+        carpeta = os.path.abspath(os.path.expanduser("~/Descargas"))
+        base = os.path.splitext(os.path.basename(ruta))[0] + "_dividido"
+        self.dividir_progress.start()
+        self.dividir_estado.config(text="Dividiendo...", foreground="orange")
+        self.btn_dividir.config(state=tk.DISABLED)
+
+        def _w():
+            try:
+                total = pdf_tools.paginas_de_pdf(ruta)
+                paginas = pdf_tools.parsear_rango(texto, total)
+                salidas = pdf_tools.dividir_pdf(ruta, paginas, carpeta, base, una_por_archivo=una)
+                self.root.after(0, lambda: _ok(salidas))
+            except Exception as e:
+                msg = str(e)
+                self.root.after(0, lambda: _err(msg))
+
+        def _ok(salidas):
+            self.dividir_progress.stop()
+            self.btn_dividir.config(state=tk.NORMAL)
+            self._dividir_ultima_salida = salidas[0]
+            self.btn_dividir_abrir.config(state=tk.NORMAL)
+            self.dividir_estado.config(
+                text=f"✅ Creado(s) {len(salidas)} archivo(s) en Descargas",
+                foreground="green")
+
+        def _err(msg):
+            self.dividir_progress.stop()
+            self.btn_dividir.config(state=tk.NORMAL)
+            self.dividir_estado.config(text="❌ No se pudo dividir", foreground="red")
+            messagebox.showwarning("No se pudo dividir", msg)
+
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _dividir_abrir_carpeta(self):
+        if self._dividir_ultima_salida:
+            self._abrir_carpeta_ruta(self._dividir_ultima_salida)
 
 
 if __name__ == "__main__":
