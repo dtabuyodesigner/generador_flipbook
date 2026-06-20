@@ -808,13 +808,16 @@ class CreadorFlipbook:
         self.tab_preparar = ttk.Frame(self.notebook)
         self.tab_flipbook = ttk.Frame(self.notebook)
         self.tab_periodicos = ttk.Frame(self.notebook)
+        self.tab_dividir = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_preparar, text="1. Preparar PDF")
         self.notebook.add(self.tab_flipbook, text="2. Generar flipbook")
         self.notebook.add(self.tab_periodicos, text="3. Mis periódicos")
+        self.notebook.add(self.tab_dividir, text="✂ Dividir PDF")
 
         self._construir_tab_flipbook(self.tab_flipbook)
         self._construir_tab_periodicos(self.tab_periodicos)
         self._construir_tab_preparar(self.tab_preparar)
+        self._construir_tab_dividir(self.tab_dividir)
 
         # Limpiar la vista previa temporal al cerrar la ventana
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1695,6 +1698,115 @@ code {{
     def abrir_instrucciones(self):
         if self.instrucciones_html and os.path.exists(self.instrucciones_html):
             webbrowser.open(f"file://{self.instrucciones_html}")
+
+    def _abrir_carpeta_ruta(self, ruta):
+        carpeta = os.path.dirname(os.path.abspath(ruta))
+        if platform.system() == "Windows":
+            os.startfile(carpeta)
+        elif platform.system() == "Darwin":
+            subprocess.Popen(["open", carpeta])
+        else:
+            subprocess.Popen(["xdg-open", carpeta])
+
+    def _construir_tab_dividir(self, parent):
+        self.dividir_pdf_path = None
+        cont = ttk.Frame(parent, padding="12")
+        cont.pack(fill=tk.BOTH, expand=True)
+        cont.columnconfigure(0, weight=1)
+
+        ttk.Label(cont, text="Divide un PDF: elige el archivo y di qué páginas "
+                             "quieres quedarte.", wraplength=560,
+                  justify=tk.LEFT).grid(row=0, column=0, sticky=tk.W)
+
+        fila = ttk.Frame(cont)
+        fila.grid(row=1, column=0, sticky=tk.W, pady=(6, 4))
+        ttk.Button(fila, text="Examinar…", command=self._dividir_examinar).pack(side=tk.LEFT)
+        self.dividir_info = ttk.Label(fila, text="(ningún PDF elegido)", foreground="gray")
+        self.dividir_info.pack(side=tk.LEFT, padx=8)
+
+        ttk.Label(cont, text="Páginas (ej. 1-4, 7, 9-11; vacío = todas):").grid(
+            row=2, column=0, sticky=tk.W, pady=(6, 0))
+        self.dividir_rango = ttk.Entry(cont, width=40)
+        self.dividir_rango.grid(row=3, column=0, sticky=tk.W, pady=(2, 4))
+
+        self.dividir_una = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cont, text="Una página por archivo (trocear todo)",
+                        variable=self.dividir_una).grid(row=4, column=0, sticky=tk.W)
+
+        self.dividir_estado = ttk.Label(cont, text="", foreground="blue")
+        self.dividir_estado.grid(row=5, column=0, sticky=tk.W, pady=(6, 2))
+        self.dividir_progress = ttk.Progressbar(cont, mode="indeterminate")
+        self.dividir_progress.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=2)
+
+        self.btn_dividir = ttk.Button(cont, text="✂ Dividir", command=self._dividir_ejecutar)
+        self.btn_dividir.grid(row=7, column=0, sticky=tk.W, pady=(4, 0))
+        self.btn_dividir_abrir = ttk.Button(cont, text="📂 Abrir carpeta",
+                                            command=self._dividir_abrir_carpeta, state=tk.DISABLED)
+        self.btn_dividir_abrir.grid(row=8, column=0, sticky=tk.W, pady=(4, 0))
+        self._dividir_ultima_salida = None
+
+    def _dividir_examinar(self):
+        ruta = filedialog.askopenfilename(title="Elige un PDF",
+                                          filetypes=[("PDF", "*.pdf")])
+        if not ruta:
+            return
+        if pdf_tools.esta_encriptado(ruta):
+            messagebox.showwarning("PDF protegido",
+                f"El PDF «{os.path.basename(ruta)}» está protegido con contraseña; "
+                "quítasela e inténtalo de nuevo.")
+            return
+        try:
+            n = pdf_tools.paginas_de_pdf(ruta)
+        except Exception as e:
+            messagebox.showwarning("No se pudo leer", str(e))
+            return
+        self.dividir_pdf_path = ruta
+        self.dividir_info.config(text=f"{os.path.basename(ruta)} — {n} páginas",
+                                 foreground="black")
+
+    def _dividir_ejecutar(self):
+        if not self.dividir_pdf_path:
+            messagebox.showinfo("Sin PDF", "Elige un PDF primero.")
+            return
+        ruta = self.dividir_pdf_path
+        texto = self.dividir_rango.get()
+        una = self.dividir_una.get()
+        carpeta = os.path.abspath(os.path.expanduser("~/Descargas"))
+        base = os.path.splitext(os.path.basename(ruta))[0] + "_dividido"
+        self.dividir_progress.start()
+        self.dividir_estado.config(text="Dividiendo...", foreground="orange")
+        self.btn_dividir.config(state=tk.DISABLED)
+
+        def _w():
+            try:
+                total = pdf_tools.paginas_de_pdf(ruta)
+                paginas = pdf_tools.parsear_rango(texto, total)
+                salidas = pdf_tools.dividir_pdf(ruta, paginas, carpeta, base, una_por_archivo=una)
+                self.root.after(0, lambda: _ok(salidas))
+            except Exception as e:
+                msg = str(e)
+                self.root.after(0, lambda: _err(msg))
+
+        def _ok(salidas):
+            self.dividir_progress.stop()
+            self.btn_dividir.config(state=tk.NORMAL)
+            self._dividir_ultima_salida = salidas[0]
+            self.btn_dividir_abrir.config(state=tk.NORMAL)
+            self.dividir_estado.config(
+                text=f"✅ Creado(s) {len(salidas)} archivo(s) en Descargas",
+                foreground="green")
+
+        def _err(msg):
+            self.dividir_progress.stop()
+            self.btn_dividir.config(state=tk.NORMAL)
+            self.dividir_estado.config(text="❌ No se pudo dividir", foreground="red")
+            messagebox.showwarning("No se pudo dividir", msg)
+
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _dividir_abrir_carpeta(self):
+        if self._dividir_ultima_salida:
+            self._abrir_carpeta_ruta(self._dividir_ultima_salida)
 
 
 if __name__ == "__main__":
