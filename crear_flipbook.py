@@ -19,6 +19,7 @@ import platform
 import zipfile
 import tempfile
 import subprocess
+import threading
 import webbrowser
 import urllib.request
 import urllib.error
@@ -847,17 +848,18 @@ class CreadorFlipbook:
         self.post_contenido.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(2, 2))
 
         # --- Acción y estado ------------------------------------------------
-        ttk.Button(left, text="🔗 Generar enlace para la web", command=self.generar_flipbook).grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(6, 3))
+        self.btn_generar = ttk.Button(left, text="🔗 Generar enlace para la web", command=self.generar_flipbook)
+        self.btn_generar.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(6, 3))
 
         self.progress = ttk.Progressbar(left, mode='indeterminate')
-        self.progress.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=2)
+        self.progress.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=2)
 
         self.status_label = ttk.Label(left, text="Listo para empezar", foreground="blue")
-        self.status_label.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=2)
+        self.status_label.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=2)
 
         # Enlace público (se rellena tras publicar en GitHub Pages)
         url_frame = ttk.Frame(left)
-        url_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(2, 0))
+        url_frame.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(2, 0))
         url_frame.columnconfigure(0, weight=1)
         self.url_var = tk.StringVar()
         self.url_entry = ttk.Entry(url_frame, textvariable=self.url_var, state="readonly")
@@ -867,7 +869,7 @@ class CreadorFlipbook:
         self.btn_copiar.grid(row=0, column=1)
 
         button_frame = ttk.Frame(left)
-        button_frame.grid(row=7, column=0, pady=(2, 0))
+        button_frame.grid(row=8, column=0, pady=(2, 0))
 
         self.btn_abrir = ttk.Button(button_frame, text="📂 Abrir Flipbook", command=self.abrir_flipbook, state=tk.DISABLED)
         self.btn_abrir.pack(side=tk.LEFT, padx=4)
@@ -1222,35 +1224,70 @@ code {{
 
             # El flipbook local YA está creado. La subida a GitHub Pages va aparte
             # para que un fallo de red nunca rompa el resultado local.
-            self.post_url = self.subir_a_github(nombre, output_dir)
 
-            self.progress.stop()
+            # Aviso de sobrescritura (antes de lanzar el hilo)
+            token = self._leer_token_github()
+            if token and github_pages.existe(token, nombre):
+                if not messagebox.askyesno(
+                    "Ya existe",
+                    f"Ya hay un periódico publicado con el nombre «{github_pages.slug(nombre)}».\n\n"
+                    "¿Quieres actualizarlo? Se sobrescribirá el anterior y el enlace "
+                    "seguirá siendo el mismo."):
+                    self.progress.stop()
+                    self.status_label.config(text="Publicación cancelada (flipbook local creado).",
+                                             foreground="blue")
+                    return
+
             webbrowser.open(f"file://{html_path}")
 
-            if self.post_url:
-                self.btn_post.config(state=tk.NORMAL)
-                self.url_var.set(self.post_url)
-                self.btn_copiar.config(state=tk.NORMAL)
-                self.status_label.config(text=f"✅ ¡Listo y publicado! ({len(images)} páginas)", foreground="green")
-                messagebox.showinfo(
-                    "✅ Publicado en la web",
-                    f"Flipbook creado con {len(images)} páginas y publicado en la web.\n\n"
-                    f"Enlace público:\n{self.post_url}\n\n"
-                    f"Copia el enlace con el botón '📋 Copiar enlace' y pégalo en Drupal.\n\n"
-                    f"Carpeta local: {output_dir}")
-            else:
-                self.status_label.config(text=f"✅ ¡Listo! ({len(images)} páginas)", foreground="green")
-                messagebox.showinfo(
-                    "✅ Éxito",
-                    f"Flipbook creado con {len(images)} páginas.\n\nCarpeta: {output_dir}")
+            self.status_label.config(text="Publicando en internet...", foreground="orange")
+            self._set_controles(False)  # deshabilita el botón principal mientras sube
 
-            # La vista previa temporal ya no hace falta tras generar/publicar
-            self._limpiar_preview_temp()
+            def _trabajo():
+                url = self._publicar_seguro(nombre, output_dir)
+                self.root.after(0, lambda: self._fin_publicacion(url, len(images), output_dir))
+
+            threading.Thread(target=_trabajo, daemon=True).start()
 
         except Exception as e:
             self.progress.stop()
             self.status_label.config(text="❌ Error", foreground="red")
             messagebox.showerror("Error", f"Error: {str(e)}")
+
+    def _set_controles(self, activo):
+        estado = tk.NORMAL if activo else tk.DISABLED
+        self.btn_generar.config(state=estado)
+
+    def _publicar_seguro(self, nombre, output_dir):
+        """Publica devolviendo URL o None; nunca lanza (corre en hilo)."""
+        token = self._leer_token_github()
+        if not token:
+            return None
+        try:
+            return github_pages.publicar(token, nombre, output_dir)
+        except Exception:
+            return None
+
+    def _fin_publicacion(self, url, n_paginas, output_dir):
+        self.progress.stop()
+        self._set_controles(True)
+        self.post_url = url
+        if url:
+            self.url_var.set(url)
+            self.btn_copiar.config(state=tk.NORMAL)
+            self.btn_post.config(state=tk.NORMAL)
+            self.status_label.config(text=f"¡Publicado! ({n_paginas} páginas)", foreground="green")
+            messagebox.showinfo("Publicado",
+                "Tu periódico está publicado en internet.\n\n"
+                f"Enlace:\n{url}\n\n"
+                "Pulsa «Copiar enlace» y pégalo en la web del colegio.")
+        else:
+            self.status_label.config(text=f"Flipbook creado ({n_paginas} páginas). No publicado.", foreground="blue")
+            messagebox.showwarning("No se pudo publicar",
+                "No se ha podido publicar en internet.\n\n"
+                "Revisa tu conexión a internet. Si el problema sigue, avisa a Dani.\n\n"
+                f"El periódico está en tu equipo:\n{output_dir}")
+        self._limpiar_preview_temp()
 
     def _copiar_enlace(self):
         """Copia la URL pública al portapapeles."""
