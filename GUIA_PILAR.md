@@ -33,9 +33,14 @@ Para quedarte solo con algunas páginas de un PDF o trocearlo.
 
 1. Pestaña **«✂ Dividir PDF»** → **«Examinar…»** y elige el PDF (te dice cuántas
    páginas tiene).
-2. Escribe qué páginas quieres: por ejemplo **`1-4, 7`** (vacío = todas).
-   - O marca **«Una página por archivo»** para separarlo entero.
-3. Pulsa **«✂ Dividir»** → los archivos se crean en **Descargas**
+2. Escribe las páginas: por ejemplo **`1-3, 4, 5-9, 10-14`** (vacío = todas).
+3. Elige **qué hacer**:
+   - **Un solo PDF con esas páginas** → junta las páginas indicadas en un único PDF.
+     (Ojo: si pones todas las páginas, el resultado es igual que el original.)
+   - **Un archivo por cada tramo** → cada grupo separado por comas se guarda como un
+     archivo aparte. Ej.: `1-3, 4, 5-9, 10-14` → **4 archivos** (`_parte1`…`_parte4`).
+   - **Una página por archivo** → trocea el PDF entero, una página por archivo.
+4. Pulsa **«✂ Dividir»** → los archivos se crean en **Descargas**
    (**📂 Abrir carpeta** para verlos). Sin internet.
 
 ---
