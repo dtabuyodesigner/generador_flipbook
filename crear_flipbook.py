@@ -11,9 +11,21 @@ Fixes:
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
+import sys
+import json
+import base64
+import shutil
+import platform
+import zipfile
+import tempfile
 import subprocess
 import webbrowser
+import urllib.request
+import urllib.error
 from datetime import datetime
+
+# Configuración local (URL/usuario WordPress y, opcionalmente, la password)
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".flipbook_config.json")
 
 try:
     from pdf2image import convert_from_path
@@ -21,6 +33,16 @@ try:
 except ImportError:
     print("Falta instalar: pip install pdf2image pillow")
     exit(1)
+
+# ImageTk es opcional: solo se usa para la vista previa dentro de la app.
+# En Linux puede faltar (paquete python3-pil.imagetk); en el .exe de Windows
+# Pillow ya lo incluye. Si falta, la app funciona igual pero sin vista previa.
+try:
+    from PIL import ImageTk
+    HAS_IMAGETK = True
+except ImportError:
+    ImageTk = None
+    HAS_IMAGETK = False
 
 
 def generar_html(titulo, num_pages):
@@ -457,60 +479,704 @@ def generar_html(titulo, num_pages):
     return html
 
 
+# ---------------------------------------------------------------------------
+# Detección de poppler (compatibilidad Windows / Linux / Mac)
+# ---------------------------------------------------------------------------
+def detectar_poppler():
+    """Devuelve la ruta a los binarios de poppler en Windows, o None para
+    Linux/Mac (donde se usa el PATH del sistema). En Windows busca poppler
+    en ubicaciones habituales o en una carpeta 'poppler/bin' junto al script."""
+    if platform.system() != "Windows":
+        return None  # Linux/Mac: pdf2image usa pdftoppm del PATH
+
+    # Ejecutable PyInstaller: poppler viaja empaquetado dentro del .exe
+    if getattr(sys, "frozen", False):
+        empaquetado = os.path.join(getattr(sys, "_MEIPASS", ""), "poppler", "bin")
+        if os.path.isdir(empaquetado) and os.path.exists(os.path.join(empaquetado, "pdftoppm.exe")):
+            return empaquetado
+        # Si no estuviera empaquetado, buscar junto al .exe
+        aqui = os.path.dirname(sys.executable)
+    else:
+        aqui = os.path.dirname(os.path.abspath(__file__))
+    candidatos = [
+        os.path.join(aqui, "poppler", "bin"),
+        os.path.join(aqui, "poppler", "Library", "bin"),
+        r"C:\poppler\bin",
+        r"C:\poppler\Library\bin",
+        r"C:\Program Files\poppler\bin",
+        r"C:\Program Files\poppler\Library\bin",
+    ]
+    for ruta in candidatos:
+        if os.path.isdir(ruta) and os.path.exists(os.path.join(ruta, "pdftoppm.exe")):
+            return ruta
+    return None  # confiar en que esté en el PATH
+
+
+# ---------------------------------------------------------------------------
+# Configuración local (~/.flipbook_config.json)
+# ---------------------------------------------------------------------------
+def cargar_config():
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def guardar_config(data):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def _ofuscar(texto):
+    """Codificación base64 simple (NO es cifrado; solo evita lectura casual)."""
+    return base64.b64encode(texto.encode("utf-8")).decode("ascii")
+
+
+def _desofuscar(texto):
+    try:
+        return base64.b64decode(texto.encode("ascii")).decode("utf-8")
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Subida a WordPress vía REST API (sin dependencias externas, usa urllib)
+# ---------------------------------------------------------------------------
+def _wp_auth_header(usuario, app_password):
+    token = base64.b64encode(f"{usuario}:{app_password}".encode("utf-8")).decode("ascii")
+    return "Basic " + token
+
+
+def _wp_error_legible(err):
+    """Extrae un mensaje legible de un urllib.error.HTTPError de WordPress."""
+    try:
+        cuerpo = err.read().decode("utf-8", "replace")
+        datos = json.loads(cuerpo)
+        msg = datos.get("message") or cuerpo
+        return f"{err.code}: {msg}"
+    except Exception:
+        return f"{getattr(err, 'code', '?')}: {err}"
+
+
+def wp_subir_media(base_url, usuario, app_password, filepath, mime):
+    """Sube un archivo a la mediateca (POST /wp-json/wp/v2/media).
+    Envía el archivo como cuerpo crudo con Content-Disposition (no multipart).
+    Devuelve el JSON de respuesta (incluye 'id' y 'source_url')."""
+    url = base_url.rstrip("/") + "/wp-json/wp/v2/media"
+    with open(filepath, "rb") as f:
+        data = f.read()
+    filename = os.path.basename(filepath)
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Authorization", _wp_auth_header(usuario, app_password))
+    req.add_header("Content-Type", mime)
+    req.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def wp_crear_post(base_url, usuario, app_password, titulo, contenido, status="publish"):
+    """Crea un post (POST /wp-json/wp/v2/posts). Devuelve el JSON de respuesta
+    (incluye 'link' con la URL pública del post)."""
+    url = base_url.rstrip("/") + "/wp-json/wp/v2/posts"
+    payload = json.dumps({
+        "title": titulo,
+        "content": contenido,
+        "status": status,
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Authorization", _wp_auth_header(usuario, app_password))
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def generar_html_embed(titulo, image_urls):
+    """Genera un HTML autocontenido del flipbook usando URLs absolutas de las
+    imágenes (las subidas a la mediateca). Se incrusta en el post mediante un
+    <iframe srcdoc>. Misma librería StPageFlip que el flipbook principal."""
+    urls_js = "[" + ",".join("'" + u.replace("'", "\\'") + "'" for u in image_urls) + "]"
+    html = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>__TITULO__</title>
+<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 15px;
+}
+#flipbook-container { display: flex; justify-content: center; align-items: center; }
+#flipbook { box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+.page { background: #fff; overflow: hidden; }
+.page img { width: 100%; height: 100%; display: block; object-fit: contain; background: #fff; }
+.controls { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
+button {
+    background: rgba(255,255,255,0.95); color: #333; border: none;
+    padding: 10px 20px; border-radius: 30px; cursor: pointer;
+    font-size: 0.95em; font-weight: 600; box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.page-info {
+    background: rgba(255,255,255,0.95); padding: 10px 20px; border-radius: 30px;
+    font-weight: bold; min-width: 110px; text-align: center;
+}
+</style>
+</head>
+<body>
+<div id="flipbook-container"><div id="flipbook"></div></div>
+<div class="controls">
+    <button id="prev-btn">&larr; Anterior</button>
+    <div class="page-info"><span id="current-page">1</span> / <span id="total-pages">__NUM_PAGES__</span></div>
+    <button id="next-btn">Siguiente &rarr;</button>
+</div>
+<script>
+const pageUrls = __URLS__;
+const totalPages = pageUrls.length;
+let pageFlip = null;
+
+function calcSize() {
+    const availW = Math.min(window.innerWidth - 40, 1000);
+    const availH = window.innerHeight - 120;
+    const aspectRatio = 1.414;
+    let width = Math.min(availW / 2, 460);
+    let height = width * aspectRatio;
+    if (height > availH) { height = availH; width = height / aspectRatio; }
+    return { width: Math.floor(width), height: Math.floor(height) };
+}
+
+function buildPages() {
+    const fb = document.getElementById('flipbook');
+    fb.innerHTML = '';
+    for (let i = 0; i < totalPages; i++) {
+        const div = document.createElement('div');
+        div.className = 'page';
+        const img = document.createElement('img');
+        img.src = pageUrls[i];
+        img.alt = 'Pagina ' + (i + 1);
+        div.appendChild(img);
+        fb.appendChild(div);
+    }
+}
+
+function initFlipbook() {
+    const size = calcSize();
+    buildPages();
+    pageFlip = new St.PageFlip(document.getElementById('flipbook'), {
+        width: size.width, height: size.height, size: 'fixed',
+        drawShadow: true, flippingTime: 700, showCover: true,
+        maxShadowOpacity: 0.5, useMouseEvents: true, swipeDistance: 30
+    });
+    pageFlip.loadFromHTML(document.querySelectorAll('.page'));
+    pageFlip.on('flip', function(e) {
+        const idx = e.data;
+        document.getElementById('current-page').textContent = idx + 1;
+        document.getElementById('prev-btn').disabled = idx === 0;
+        document.getElementById('next-btn').disabled = idx >= totalPages - 1;
+    });
+    document.getElementById('prev-btn').disabled = true;
+    document.getElementById('next-btn').disabled = totalPages <= 1;
+}
+
+document.getElementById('prev-btn').addEventListener('click', function() { if (pageFlip) pageFlip.flipPrev(); });
+document.getElementById('next-btn').addEventListener('click', function() { if (pageFlip) pageFlip.flipNext(); });
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowRight' && pageFlip) pageFlip.flipNext();
+    if (e.key === 'ArrowLeft' && pageFlip) pageFlip.flipPrev();
+});
+let resizeTimer;
+window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() { if (pageFlip) { try { pageFlip.destroy(); } catch (e) {} } initFlipbook(); }, 400);
+});
+window.addEventListener('load', initFlipbook);
+</script>
+</body>
+</html>
+"""
+    html = html.replace("__TITULO__", titulo)
+    html = html.replace("__NUM_PAGES__", str(len(image_urls)))
+    html = html.replace("__URLS__", urls_js)
+    return html
+
+
+# ---------------------------------------------------------------------------
+# Publicación en GitHub Pages vía Git Data API (urllib, sin dependencias extra)
+# ---------------------------------------------------------------------------
+
+def _gh_headers(token):
+    """Cabeceras comunes para todas las peticiones a la API de GitHub."""
+    return {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "flipbook-generator",
+        "Content-Type": "application/json",
+    }
+
+
+def _gh_request(token, method, url, body=None):
+    """Petición HTTP a la API de GitHub. Devuelve el JSON decodificado.
+    Lanza urllib.error.HTTPError en caso de error HTTP."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    for k, v in _gh_headers(token).items():
+        req.add_header(k, v)
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _gh_error_legible(err):
+    """Extrae un mensaje legible de un urllib.error.HTTPError de GitHub."""
+    try:
+        cuerpo = err.read().decode("utf-8", "replace")
+        datos = json.loads(cuerpo)
+        msg = datos.get("message") or cuerpo
+        return f"HTTP {err.code}: {msg}"
+    except Exception:
+        return f"HTTP {getattr(err, 'code', '?')}: {err}"
+
+
+
+def _gh_get_ref_sha(token, owner, repo, branch):
+    """Obtiene el SHA del último commit de `branch`. Devuelve None si no existe."""
+    base = f"https://api.github.com/repos/{owner}/{repo}"
+    url = f"{base}/git/ref/heads/{branch}"
+    req = urllib.request.Request(url, method="GET")
+    for k, v in _gh_headers(token).items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["object"]["sha"]
+    except urllib.error.HTTPError as e:
+        body = e.read()  # leer y descartar
+        if e.code == 404:
+            return None
+        raise
+
+
+def gh_asegurar_rama(token, owner, repo, branch):
+    """Asegura que la rama `branch` existe. Si no, la crea huérfana.
+    Devuelve el SHA del último commit de la rama."""
+    base = f"https://api.github.com/repos/{owner}/{repo}"
+    sha = _gh_get_ref_sha(token, owner, repo, branch)
+    if sha:
+        return sha
+
+    # Crear rama huérfana: blob vacío → tree → commit sin parents → ref
+    # Blob vacío
+    blob = _gh_request(token, "POST", f"{base}/git/blobs",
+                       {"content": "", "encoding": "utf-8"})
+
+    # Tree con un archivo .gitkeep
+    tree = _gh_request(token, "POST", f"{base}/git/trees", {
+        "tree": [{"path": ".gitkeep", "mode": "100644",
+                  "type": "blob", "sha": blob["sha"]}]
+    })
+
+    # Commit sin parents
+    commit = _gh_request(token, "POST", f"{base}/git/commits", {
+        "message": "Inicializar rama gh-pages",
+        "tree": tree["sha"],
+        "parents": [],
+    })
+
+    # Crear la ref
+    _gh_request(token, "POST", f"{base}/git/refs", {
+        "ref": f"refs/heads/{branch}",
+        "sha": commit["sha"],
+    })
+    return commit["sha"]
+
+
+def gh_asegurar_pages(token, owner, repo, branch):
+    """Activa GitHub Pages si no está activo. Ignora 409 (ya existe)."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/pages"
+    body = {"source": {"branch": branch, "path": "/"}}
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
+    for k, v in _gh_headers(token).items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()  # 201 Created — Pages activado
+    except urllib.error.HTTPError as e:
+        e.read()  # leer y descartar el cuerpo
+        if e.code in (409, 422):
+            # 409: ya estaba activo. 422: repos sin plan Team/Enterprise
+            # (Pages se activará igualmente cuando se empuje la rama gh-pages)
+            return
+        raise
+
+
+def gh_publicar_flipbook(token, owner, repo, branch, nombre, output_dir):
+    """Publica el flipbook en GitHub Pages usando la Git Data API.
+
+    Pasos:
+      1. Asegura que la rama `branch` existe.
+      2. Crea un blob por cada archivo (index.html + pages/*.png).
+      3. Crea un tree sobre el tree del último commit de la rama.
+      4. Crea un commit con ese tree.
+      5. Actualiza la ref de la rama.
+
+    Devuelve la URL pública: https://{owner}.github.io/{repo}/{nombre}/
+    """
+    base = f"https://api.github.com/repos/{owner}/{repo}"
+
+    # 1) Asegurar rama y obtener SHA del último commit
+    parent_sha = gh_asegurar_rama(token, owner, repo, branch)
+
+    # Obtener el tree SHA del commit padre para usar como base_tree
+    commit_data = _gh_request(token, "GET", f"{base}/git/commits/{parent_sha}")
+    base_tree_sha = commit_data["tree"]["sha"]
+
+    # 2) Recopilar archivos a subir
+    archivos = []
+    # index.html
+    index_path = os.path.join(output_dir, "index.html")
+    if os.path.exists(index_path):
+        archivos.append((f"{nombre}/index.html", index_path))
+    # pages/*.png
+    pages_dir = os.path.join(output_dir, "pages")
+    if os.path.isdir(pages_dir):
+        for fname in sorted(os.listdir(pages_dir)):
+            if fname.lower().endswith(".png"):
+                archivos.append((f"{nombre}/pages/{fname}", os.path.join(pages_dir, fname)))
+
+    # 3) Crear blobs
+    tree_entries = []
+    for gh_path, local_path in archivos:
+        with open(local_path, "rb") as f:
+            content_b64 = base64.b64encode(f.read()).decode("ascii")
+        blob = _gh_request(token, "POST", f"{base}/git/blobs",
+                           {"content": content_b64, "encoding": "base64"})
+        tree_entries.append({
+            "path": gh_path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": blob["sha"],
+        })
+
+    # 4) Crear tree
+    tree = _gh_request(token, "POST", f"{base}/git/trees", {
+        "base_tree": base_tree_sha,
+        "tree": tree_entries,
+    })
+
+    # 5) Crear commit
+    commit = _gh_request(token, "POST", f"{base}/git/commits", {
+        "message": f"Publicar flipbook: {nombre}",
+        "tree": tree["sha"],
+        "parents": [parent_sha],
+    })
+
+    # 6) Actualizar ref
+    _gh_request(token, "PATCH", f"{base}/git/refs/heads/{branch}", {
+        "sha": commit["sha"],
+        "force": False,
+    })
+
+    return f"https://{owner}.github.io/{repo}/{nombre}/"
+
+
+def generar_preview_post_html(titulo, contenido, flipbook_src="index.html"):
+    """Página local que SIMULA cómo quedará el post de WordPress: título +
+    contenido + flipbook embebido (iframe al flipbook local) + botón de
+    descarga. Es solo para revisar antes de publicar; no sube nada."""
+    t = (titulo or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    bloque_contenido = ""
+    if contenido:
+        c = (contenido.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                      .replace("\n", "<br>\n"))
+        bloque_contenido = f'<p class="post-content">{c}</p>'
+
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vista previa: {t}</title>
+<style>
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; font-family: 'Segoe UI', Tahoma, sans-serif; background: #eef0f5; color: #222; }}
+.preview-banner {{ background: #ffc107; color: #5a4500; text-align: center; padding: 10px; font-weight: bold; letter-spacing: .5px; }}
+.post {{ max-width: 900px; margin: 24px auto; background: #fff; border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,.12); padding: 36px; }}
+.post h1 {{ font-size: 2em; margin: 0 0 18px; color: #1a1a1a; }}
+.post-content {{ font-size: 1.05em; line-height: 1.6; color: #444; margin-bottom: 24px; }}
+.flip-wrap iframe {{ width: 100%; height: 82vh; min-height: 480px; max-height: 920px; border: 0; border-radius: 10px; background: #667eea; }}
+.descarga {{ text-align: center; margin-top: 22px; }}
+.descarga a {{ display: inline-block; background: #667eea; color: #fff; padding: 12px 28px; border-radius: 30px; text-decoration: none; font-weight: bold; opacity: .6; }}
+.nota {{ text-align: center; color: #999; font-size: .85em; margin-top: 8px; }}
+</style>
+</head>
+<body>
+<div class="preview-banner">👁 VISTA PREVIA — así se verá el post publicado (todavía NO publicado)</div>
+<div class="post">
+    <h1>{t}</h1>
+    {bloque_contenido}
+    <div class="flip-wrap"><iframe src="{flipbook_src}" allowfullscreen></iframe></div>
+    <div class="descarga"><a href="#" onclick="return false;">⬇ Descargar flipbook (ZIP)</a></div>
+    <div class="nota">El botón de descarga se activará al publicar en WordPress.</div>
+</div>
+</body>
+</html>
+"""
+
+
 class CreadorFlipbook:
     def __init__(self, root):
         self.root = root
         self.root.title("Generador de Periódicos Digitales")
-        self.root.geometry("550x510")
-        self.root.resizable(False, False)
-        
+        self.root.geometry("1180x668")
+        self.root.minsize(960, 560)
+
         self.pdf_path = tk.StringVar()
         self.output_folder = None
         self.flipbook_html = None
         self.instrucciones_html = None
-        
+        self.zip_path = None
+        self.post_url = None
+
+        # Estado de la vista previa de páginas
+        self.preview_images = []     # páginas como PIL.Image
+        self.preview_photo = None    # referencia viva del PhotoImage (evita GC)
+        self.preview_index = 0
+        self.preview_temp_dir = None # carpeta temporal del flipbook de vista previa
+
         style = ttk.Style()
         style.theme_use('clam')
-        
-        main_frame = ttk.Frame(root, padding="20")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        title = ttk.Label(main_frame, text="📰 Generador de Periódicos Digitales", 
-                         font=("Arial", 14, "bold"))
-        title.grid(row=0, column=0, columnspan=2, pady=10)
-        
-        ttk.Label(main_frame, text="1. Selecciona el PDF:", font=("Arial", 10)).grid(row=1, column=0, sticky=tk.W, pady=10)
-        
-        pdf_frame = ttk.Frame(main_frame)
-        pdf_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
-        ttk.Entry(pdf_frame, textvariable=self.pdf_path, state="readonly", width=40).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        cfg = cargar_config()
+
+        root.columnconfigure(0, weight=0)   # formulario: ancho fijo
+        root.columnconfigure(1, weight=1)   # vista previa: se estira
+        root.rowconfigure(0, weight=1)
+
+        # ===================== COLUMNA IZQUIERDA: formulario =====================
+        left = ttk.Frame(root, padding="12")
+        left.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.W, tk.E))
+        left.columnconfigure(0, weight=1)
+
+        title = ttk.Label(left, text="📰 Generador de Periódicos Digitales",
+                         font=("Arial", 13, "bold"))
+        title.grid(row=0, column=0, pady=(0, 5), sticky=(tk.W, tk.E))
+
+        # --- Sección 1: PDF y carpeta ---------------------------------------
+        sec_pdf = ttk.LabelFrame(left, text="1. Flipbook", padding="8")
+        sec_pdf.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=3)
+        sec_pdf.columnconfigure(0, weight=1)
+
+        ttk.Label(sec_pdf, text="Selecciona el PDF:").grid(row=0, column=0, sticky=tk.W)
+        pdf_frame = ttk.Frame(sec_pdf)
+        pdf_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(2, 8))
+        ttk.Entry(pdf_frame, textvariable=self.pdf_path, state="readonly", width=30).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         ttk.Button(pdf_frame, text="Examinar...", command=self.seleccionar_pdf).pack(side=tk.LEFT)
-        
-        ttk.Label(main_frame, text="2. Nombre de la carpeta:", font=("Arial", 10)).grid(row=3, column=0, sticky=tk.W, pady=10)
-        self.nombre_output = ttk.Entry(main_frame, width=40)
-        self.nombre_output.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+
+        ttk.Label(sec_pdf, text="Nombre de la carpeta:").grid(row=2, column=0, sticky=tk.W)
+        self.nombre_output = ttk.Entry(sec_pdf, width=44)
+        self.nombre_output.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=2)
         self.nombre_output.insert(0, f"periodico_{datetime.now().strftime('%d_%m_%Y').lower()}")
-        
-        ttk.Button(main_frame, text="3. Generar Flipbook", command=self.generar_flipbook).grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=20)
-        
-        self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
-        self.progress.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
-        
-        self.status_label = ttk.Label(main_frame, text="Listo para empezar", foreground="blue")
-        self.status_label.grid(row=7, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
-        
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=8, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
-        
+
+        # --- Sección 2: Título del periódico ------------------------------------
+        sec_post = ttk.LabelFrame(left, text="2. Título del periódico", padding="8")
+        sec_post.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=3)
+        sec_post.columnconfigure(0, weight=1)
+
+        ttk.Label(sec_post, text="Título:").grid(row=0, column=0, sticky=tk.W)
+        self.post_titulo = ttk.Entry(sec_post, width=44)
+        self.post_titulo.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(2, 4))
+
+        # --- Sección 3: Publicar en la web (GitHub Pages) -------------------
+        sec_gh = ttk.LabelFrame(left, text="3. Publicar en la web", padding="8")
+        sec_gh.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=3)
+        sec_gh.columnconfigure(0, weight=1)
+
+        ttk.Label(sec_gh, text="Token de GitHub (solo la primera vez):").grid(
+            row=0, column=0, sticky=tk.W, pady=(0, 2))
+        self.gh_token = ttk.Entry(sec_gh, show="*", width=44)
+        self.gh_token.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 4))
+        if cfg.get("github_token"):
+            self.gh_token.insert(0, _desofuscar(cfg.get("github_token")))
+
+        self.recordar = tk.BooleanVar(value=bool(cfg.get("github_token")))
+        ttk.Checkbutton(sec_gh, text="Recordar token (se guarda ofuscado en disco)",
+                        variable=self.recordar).grid(row=2, column=0, sticky=tk.W, pady=(0, 2))
+
+        # --- Acción y estado ------------------------------------------------
+        ttk.Button(left, text="🔗 Generar enlace para la web", command=self.generar_flipbook).grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(6, 3))
+
+        self.progress = ttk.Progressbar(left, mode='indeterminate')
+        self.progress.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=2)
+
+        self.status_label = ttk.Label(left, text="Listo para empezar", foreground="blue")
+        self.status_label.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=2)
+
+        # Enlace público (se rellena tras publicar en GitHub Pages)
+        url_frame = ttk.Frame(left)
+        url_frame.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(2, 0))
+        url_frame.columnconfigure(0, weight=1)
+        self.url_var = tk.StringVar()
+        self.url_entry = ttk.Entry(url_frame, textvariable=self.url_var, state="readonly")
+        self.url_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 4))
+        self.btn_copiar = ttk.Button(url_frame, text="📋 Copiar enlace",
+                                     command=self._copiar_enlace, state=tk.DISABLED)
+        self.btn_copiar.grid(row=0, column=1)
+
+        button_frame = ttk.Frame(left)
+        button_frame.grid(row=8, column=0, pady=(2, 0))
+
         self.btn_abrir = ttk.Button(button_frame, text="📂 Abrir Flipbook", command=self.abrir_flipbook, state=tk.DISABLED)
-        self.btn_abrir.pack(side=tk.LEFT, padx=5)
-        
+        self.btn_abrir.pack(side=tk.LEFT, padx=4)
+
         self.btn_carpeta = ttk.Button(button_frame, text="📁 Ver Carpeta", command=self.abrir_carpeta, state=tk.DISABLED)
-        self.btn_carpeta.pack(side=tk.LEFT, padx=5)
-        
+        self.btn_carpeta.pack(side=tk.LEFT, padx=4)
+
+        self.btn_post = ttk.Button(button_frame, text="🌐 Abrir en navegador", command=self.abrir_post, state=tk.DISABLED)
+        self.btn_post.pack(side=tk.LEFT, padx=4)
+
         self.btn_instrucciones = ttk.Button(button_frame, text="📋 Instrucciones", command=self.abrir_instrucciones, state=tk.DISABLED)
-        self.btn_instrucciones.pack(side=tk.LEFT, padx=5)
-    
+        self.btn_instrucciones.pack(side=tk.LEFT, padx=4)
+
+        # ===================== COLUMNA DERECHA: vista previa =====================
+        right = ttk.LabelFrame(root, text="👁 Vista previa de páginas", padding="10")
+        right.grid(row=0, column=1, sticky=(tk.N, tk.S, tk.E, tk.W), padx=(0, 12), pady=12)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        self.btn_preview = ttk.Button(right, text="🔄 Generar vista previa", command=self.generar_preview)
+        self.btn_preview.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+
+        self.preview_canvas = tk.Canvas(right, bg="#2f2f45", highlightthickness=0, width=440, height=560)
+        self.preview_canvas.grid(row=1, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+        self.preview_canvas.bind("<Configure>", lambda e: self._render_preview())
+
+        nav = ttk.Frame(right)
+        nav.grid(row=2, column=0, pady=(8, 0))
+        self.btn_pv_prev = ttk.Button(nav, text="◀", width=4, command=self.preview_prev, state=tk.DISABLED)
+        self.btn_pv_prev.pack(side=tk.LEFT, padx=4)
+        self.preview_label = ttk.Label(nav, text="—", width=14, anchor=tk.CENTER)
+        self.preview_label.pack(side=tk.LEFT, padx=6)
+        self.btn_pv_next = ttk.Button(nav, text="▶", width=4, command=self.preview_next, state=tk.DISABLED)
+        self.btn_pv_next.pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(right, text="El visor pasa página a página dentro de la app. Además, al pulsar\n'Generar vista previa' se abre el flipbook real (con animación) en el\nnavegador, sin publicar nada. Si está bien, pulsa 'Generar y Publicar'.",
+                  foreground="gray", justify=tk.CENTER).grid(row=3, column=0, pady=(8, 0))
+
+        # Limpiar la vista previa temporal al cerrar la ventana
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def generar_preview(self):
+        if not self.pdf_path.get():
+            messagebox.showerror("Error", "Selecciona un PDF primero")
+            return
+        if not os.path.exists(self.pdf_path.get()):
+            messagebox.showerror("Error", "El PDF no existe")
+            return
+
+        # Borrar una vista previa temporal anterior antes de crear la nueva
+        self._limpiar_preview_temp()
+
+        self.progress.start()
+        self.status_label.config(text="Generando vista previa...", foreground="orange")
+        self.btn_preview.config(state=tk.DISABLED)
+        self.root.update()
+        try:
+            nombre = self.nombre_output.get().strip() or "vista_previa"
+            tmp = tempfile.mkdtemp(prefix="flipbook_preview_")
+            pages_dir = os.path.join(tmp, "pages")
+            os.makedirs(pages_dir, exist_ok=True)
+
+            poppler_path = detectar_poppler()
+            if poppler_path:
+                imgs = convert_from_path(self.pdf_path.get(), dpi=150, poppler_path=poppler_path)
+            else:
+                imgs = convert_from_path(self.pdf_path.get(), dpi=150)
+
+            # Misma lógica que la generación real: así la vista previa es
+            # idéntica al flipbook que se publicará.
+            for i, image in enumerate(imgs, 1):
+                image.thumbnail((1200, 1600), Image.Resampling.LANCZOS)
+                image.save(os.path.join(pages_dir, f"page_{i:03d}.png"), "PNG", optimize=True)
+
+            html_path = os.path.join(tmp, "index.html")
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(generar_html(nombre, len(imgs)))
+
+            # Página de vista previa (título + flipbook)
+            titulo_post = self.post_titulo.get().strip() or nombre
+            contenido_post = ""
+            preview_path = os.path.join(tmp, "preview_post.html")
+            with open(preview_path, "w", encoding="utf-8") as f:
+                f.write(generar_preview_post_html(titulo_post, contenido_post, "index.html"))
+
+            self.preview_temp_dir = tmp
+
+            # Abrir en el navegador la vista del POST tal cual se publicará
+            webbrowser.open(f"file://{preview_path}")
+
+            # Visor interno página a página (si ImageTk está disponible)
+            if HAS_IMAGETK:
+                self.preview_images = imgs
+                self.preview_index = 0
+                self._render_preview()
+                self.status_label.config(text=f"Vista previa lista: {len(imgs)} páginas. Revísala antes de publicar.", foreground="green")
+            else:
+                self.status_label.config(text=f"Vista previa abierta en el navegador ({len(imgs)} páginas).", foreground="green")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo generar la vista previa:\n{e}")
+            self.status_label.config(text="❌ Error en vista previa", foreground="red")
+        finally:
+            self.progress.stop()
+            self.btn_preview.config(state=tk.NORMAL)
+
+    def _limpiar_preview_temp(self):
+        """Borra la carpeta temporal de la última vista previa, si existe."""
+        if self.preview_temp_dir and os.path.isdir(self.preview_temp_dir):
+            shutil.rmtree(self.preview_temp_dir, ignore_errors=True)
+        self.preview_temp_dir = None
+
+    def _on_close(self):
+        self._limpiar_preview_temp()
+        self.root.destroy()
+
+    def _render_preview(self):
+        if not self.preview_images:
+            return
+        img = self.preview_images[self.preview_index]
+        cw = max(self.preview_canvas.winfo_width(), 50)
+        ch = max(self.preview_canvas.winfo_height(), 50)
+        iw, ih = img.size
+        escala = min(cw / iw, ch / ih)
+        nw, nh = max(int(iw * escala), 1), max(int(ih * escala), 1)
+        img_red = img.resize((nw, nh), Image.Resampling.LANCZOS)
+        self.preview_photo = ImageTk.PhotoImage(img_red)
+        self.preview_canvas.delete("all")
+        self.preview_canvas.create_image(cw // 2, ch // 2, image=self.preview_photo)
+        self.preview_label.config(text=f"{self.preview_index + 1} / {len(self.preview_images)}")
+        self.btn_pv_prev.config(state=(tk.NORMAL if self.preview_index > 0 else tk.DISABLED))
+        self.btn_pv_next.config(state=(tk.NORMAL if self.preview_index < len(self.preview_images) - 1 else tk.DISABLED))
+
+    def preview_prev(self):
+        if self.preview_images and self.preview_index > 0:
+            self.preview_index -= 1
+            self._render_preview()
+
+    def preview_next(self):
+        if self.preview_images and self.preview_index < len(self.preview_images) - 1:
+            self.preview_index += 1
+            self._render_preview()
+
     def seleccionar_pdf(self):
         pdf = filedialog.askopenfilename(
             title="Selecciona el PDF",
@@ -548,12 +1214,18 @@ class CreadorFlipbook:
             self.status_label.config(text="Extrayendo páginas...", foreground="orange")
             self.root.update()
             
-            images = convert_from_path(self.pdf_path.get(), dpi=150)
-            
+            poppler_path = detectar_poppler()
+            if poppler_path:
+                images = convert_from_path(self.pdf_path.get(), dpi=150, poppler_path=poppler_path)
+            else:
+                images = convert_from_path(self.pdf_path.get(), dpi=150)
+
+            page_paths = []
             for i, image in enumerate(images, 1):
                 page_path = os.path.join(pages_dir, f"page_{i:03d}.png")
                 image.thumbnail((1200, 1600), Image.Resampling.LANCZOS)
                 image.save(page_path, "PNG", optimize=True)
+                page_paths.append(page_path)
             
             self.status_label.config(text="Creando HTML...", foreground="orange")
             self.root.update()
@@ -653,38 +1325,31 @@ code {{
 </head>
 <body>
 <div class="container">
-    <h1>📰 ¡Tu periódico está listo!</h1>
-    <p class="subtitle">3 pasos para compartirlo con los padres</p>
-    
+    <h1>📰 ¡Tu periódico está listo y publicado!</h1>
+    <p class="subtitle">Solo te quedan 2 pasos para que lo vean las familias</p>
+
     <div class="step">
         <div class="step-number">1</div>
         <div class="step-content">
-            <h3>Comprime la carpeta</h3>
-            <p>Haz <strong>clic derecho</strong> sobre la carpeta <code>{nombre}</code> y selecciona <strong>"Comprimir"</strong> o <strong>"Enviar a → Carpeta ZIP"</strong>.</p>
+            <h3>Copia el enlace</h3>
+            <p>En la app, pulsa el botón <strong>"📋 Copiar enlace"</strong>. Tu periódico ya está publicado en internet en esta dirección:</p>
+            <p><code>https://dtabuyodesigner.github.io/generador_flipbook/{nombre}/</code></p>
         </div>
     </div>
-    
+
     <div class="step">
         <div class="step-number">2</div>
         <div class="step-content">
-            <h3>Sube a WordPress</h3>
-            <p>En el WordPress del colegio: <strong>Medios → Añadir nuevo</strong>. Sube el archivo ZIP o pide ayuda al coordinador TIC.</p>
+            <h3>Pégalo en la web del colegio</h3>
+            <p>Entra en el portal del colegio → <strong>Agregar contenido → "Enlaces"</strong> (o dentro de un <strong>"Anuncio"</strong>) y <strong>pega el enlace</strong>. Guarda y listo: las familias ya pueden abrir el periódico.</p>
         </div>
     </div>
-    
-    <div class="step">
-        <div class="step-number">3</div>
-        <div class="step-content">
-            <h3>Comparte el enlace</h3>
-            <p>Copia el enlace generado y envíalo por <strong>email, WhatsApp</strong> o publícalo en la web del colegio.</p>
-        </div>
-    </div>
-    
+
     <div class="step highlight">
         <div class="step-number">💡</div>
         <div class="step-content">
-            <h3>Alternativa rápida y gratis</h3>
-            <p>Si prefieres no usar WordPress, arrastra la carpeta a <strong><a href="https://app.netlify.com/drop" target="_blank">Netlify Drop</a></strong> y consigue un enlace en 30 segundos.</p>
+            <h3>Bueno saber</h3>
+            <p>El enlace es <strong>permanente</strong> y se abre directamente en el navegador (no hace falta descargar nada). Si vuelves a generar el periódico con el <strong>mismo nombre</strong>, se actualiza en la misma dirección.</p>
         </div>
     </div>
     
@@ -699,23 +1364,238 @@ code {{
             with open(instr_path, "w", encoding="utf-8") as f:
                 f.write(instr_html)
             self.instrucciones_html = instr_path
-            
+
+            # Crear ZIP de la carpeta completa
+            self.status_label.config(text="Creando ZIP...", foreground="orange")
+            self.root.update()
+            zip_path = output_dir + ".zip"
+            base_dir = os.path.dirname(output_dir)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for root_dir, _, files in os.walk(output_dir):
+                    for file in files:
+                        fp = os.path.join(root_dir, file)
+                        zf.write(fp, os.path.relpath(fp, base_dir))
+
             self.output_folder = output_dir
             self.flipbook_html = html_path
-            
-            self.progress.stop()
-            self.status_label.config(text=f"✅ ¡Listo! ({len(images)} páginas)", foreground="green")
+            self.zip_path = zip_path
+
             self.btn_abrir.config(state=tk.NORMAL)
             self.btn_carpeta.config(state=tk.NORMAL)
             self.btn_instrucciones.config(state=tk.NORMAL)
-            
+
+            # El flipbook local YA está creado. La subida a GitHub Pages va aparte
+            # para que un fallo de red nunca rompa el resultado local.
+            self.post_url = self.subir_a_github(nombre, output_dir)
+
+            self.progress.stop()
             webbrowser.open(f"file://{html_path}")
-            messagebox.showinfo("✅ Éxito", f"Flipbook creado con {len(images)} páginas.\n\nCarpeta: {output_dir}")
-            
+
+            if self.post_url:
+                self.btn_post.config(state=tk.NORMAL)
+                self.url_var.set(self.post_url)
+                self.btn_copiar.config(state=tk.NORMAL)
+                self.status_label.config(text=f"✅ ¡Listo y publicado! ({len(images)} páginas)", foreground="green")
+                messagebox.showinfo(
+                    "✅ Publicado en la web",
+                    f"Flipbook creado con {len(images)} páginas y publicado en la web.\n\n"
+                    f"Enlace público:\n{self.post_url}\n\n"
+                    f"Copia el enlace con el botón '📋 Copiar enlace' y pégalo en Drupal.\n\n"
+                    f"Carpeta local: {output_dir}")
+            else:
+                self.status_label.config(text=f"✅ ¡Listo! ({len(images)} páginas)", foreground="green")
+                messagebox.showinfo(
+                    "✅ Éxito",
+                    f"Flipbook creado con {len(images)} páginas.\n\nCarpeta: {output_dir}")
+
+            # La vista previa temporal ya no hace falta tras generar/publicar
+            self._limpiar_preview_temp()
+
         except Exception as e:
             self.progress.stop()
             self.status_label.config(text="❌ Error", foreground="red")
             messagebox.showerror("Error", f"Error: {str(e)}")
+
+    def _copiar_enlace(self):
+        """Copia la URL pública al portapapeles."""
+        url = self.url_var.get()
+        if url:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(url)
+            self.root.update()
+            self.status_label.config(text="Enlace copiado ✅", foreground="green")
+
+    def _leer_token_github(self):
+        """Intenta leer el token GitHub: primero del campo UI; si vacío,
+        busca tokengenerarflipbook.txt junto al script o en su carpeta padre."""
+        token = self.gh_token.get().strip()
+        if token:
+            return token
+
+        # Buscar el archivo de token. En el .exe empaquetado __file__ apunta a
+        # un temporal, así que también miramos junto al ejecutable (sys.executable).
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        candidates = [
+            os.path.join(exe_dir, "tokengenerarflipbook.txt"),
+            os.path.join(script_dir, "tokengenerarflipbook.txt"),
+            os.path.join(os.path.dirname(script_dir), "tokengenerarflipbook.txt"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        tok = f.read().strip()
+                    if tok:
+                        return tok
+                except Exception:
+                    pass
+        return None
+
+    def subir_a_github(self, nombre, output_dir):
+        """Publica el flipbook en GitHub Pages. Devuelve la URL pública o None.
+        El flipbook local nunca se rompe aunque falle la subida."""
+        token = self._leer_token_github()
+        if not token:
+            messagebox.showwarning(
+                "Token no encontrado",
+                "No se encontró el token de GitHub.\n\n"
+                "Pégalo en el campo 'Token de GitHub' o coloca el archivo\n"
+                "'tokengenerarflipbook.txt' junto al script.\n\n"
+                "El flipbook local se ha creado correctamente.")
+            return None
+
+        # Guardar token si "Recordar" está activo
+        if self.recordar.get():
+            cfg = cargar_config()
+            cfg["github_token"] = _ofuscar(token)
+            guardar_config(cfg)
+
+        owner = "dtabuyodesigner"
+        repo = "generador_flipbook"
+        branch = "gh-pages"
+
+        try:
+            self.status_label.config(text="Publicando en la web...", foreground="orange")
+            self.root.update()
+
+            # Activar GitHub Pages si no está activo
+            gh_asegurar_pages(token, owner, repo, branch)
+
+            self.status_label.config(text="Subiendo páginas...", foreground="orange")
+            self.root.update()
+
+            url = gh_publicar_flipbook(token, owner, repo, branch, nombre, output_dir)
+
+            self.status_label.config(text="¡Publicado en la web! ✅", foreground="green")
+            self.root.update()
+            return url
+
+        except urllib.error.HTTPError as e:
+            messagebox.showwarning(
+                "GitHub no disponible",
+                "El flipbook se creó correctamente en local, pero falló la publicación en GitHub.\n\n"
+                f"Error: {_gh_error_legible(e)}")
+            return None
+        except urllib.error.URLError as e:
+            messagebox.showwarning(
+                "GitHub no disponible",
+                "El flipbook se creó correctamente en local, pero no se pudo conectar con GitHub.\n\n"
+                f"Comprueba la conexión.\n\nError: {e.reason}")
+            return None
+        except Exception as e:
+            messagebox.showwarning(
+                "GitHub no disponible",
+                "El flipbook se creó correctamente en local, pero falló la publicación en GitHub.\n\n"
+                f"Error: {str(e)}")
+            return None
+
+    def subir_a_wordpress(self, nombre, zip_path, page_paths):
+        """Sube el flipbook a WordPress y crea un post publicado con el flipbook
+        embebido (iframe srcdoc con las páginas subidas a la mediateca) + botón
+        de descarga del ZIP. Devuelve la URL del post, o None si no procede o si
+        falla (en cuyo caso el flipbook local permanece intacto)."""
+        url = self.wp_url.get().strip()
+        usuario = self.wp_user.get().strip()
+        password = self.wp_pass.get().strip()
+
+        # Si no hay credenciales completas, no se publica (solo flipbook local)
+        if not (url and usuario and password):
+            return None
+
+        # Guardar configuración (la password solo si "Recordar credenciales")
+        config = {"url": url, "usuario": usuario}
+        if self.recordar.get():
+            config["password"] = _ofuscar(password)
+        guardar_config(config)
+
+        titulo = self.post_titulo.get().strip() or nombre
+        contenido_usuario = self.post_contenido.get("1.0", tk.END).strip()
+
+        try:
+            # 1) Subir el ZIP (para el botón de descarga)
+            self.status_label.config(text="WordPress: subiendo ZIP...", foreground="orange")
+            self.root.update()
+            media_zip = wp_subir_media(url, usuario, password, zip_path, "application/zip")
+            zip_url = media_zip.get("source_url", "")
+
+            # 2) Subir cada página PNG (para el flipbook embebido)
+            image_urls = []
+            total = len(page_paths)
+            for idx, pp in enumerate(page_paths, 1):
+                self.status_label.config(text=f"WordPress: subiendo página {idx}/{total}...", foreground="orange")
+                self.root.update()
+                media_img = wp_subir_media(url, usuario, password, pp, "image/png")
+                image_urls.append(media_img.get("source_url", ""))
+
+            # 3) Construir el contenido del post (texto + flipbook + descarga)
+            self.status_label.config(text="WordPress: creando post...", foreground="orange")
+            self.root.update()
+
+            embed_html = generar_html_embed(titulo, image_urls)
+            srcdoc = embed_html.replace("&", "&amp;").replace('"', "&quot;")
+
+            partes = []
+            if contenido_usuario:
+                texto_html = contenido_usuario.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                texto_html = texto_html.replace("\n", "<br>\n")
+                partes.append(f"<p>{texto_html}</p>")
+
+            partes.append(
+                f'<iframe srcdoc="{srcdoc}" style="width:100%;height:82vh;min-height:480px;max-height:920px;border:0;" '
+                f'loading="lazy" allowfullscreen></iframe>')
+
+            if zip_url:
+                partes.append(
+                    '<p style="text-align:center;margin-top:20px;">'
+                    f'<a href="{zip_url}" download '
+                    'style="display:inline-block;background:#667eea;color:#fff;padding:12px 28px;'
+                    'border-radius:30px;text-decoration:none;font-weight:bold;">'
+                    '⬇ Descargar flipbook (ZIP)</a></p>')
+
+            contenido_post = "\n".join(partes)
+
+            post = wp_crear_post(url, usuario, password, titulo, contenido_post, status="publish")
+            return post.get("link")
+
+        except urllib.error.HTTPError as e:
+            messagebox.showwarning(
+                "WordPress no disponible",
+                "El flipbook se creó correctamente en local, pero falló la publicación en WordPress.\n\n"
+                f"Error: {_wp_error_legible(e)}")
+            return None
+        except urllib.error.URLError as e:
+            messagebox.showwarning(
+                "WordPress no disponible",
+                "El flipbook se creó correctamente en local, pero no se pudo conectar con WordPress.\n\n"
+                f"Comprueba la URL y la conexión.\n\nError: {e.reason}")
+            return None
+        except Exception as e:
+            messagebox.showwarning(
+                "WordPress no disponible",
+                "El flipbook se creó correctamente en local, pero falló la publicación en WordPress.\n\n"
+                f"Error: {str(e)}")
+            return None
     
     def abrir_flipbook(self):
         if self.flipbook_html and os.path.exists(self.flipbook_html):
@@ -723,7 +1603,16 @@ code {{
     
     def abrir_carpeta(self):
         if self.output_folder and os.path.exists(self.output_folder):
-            subprocess.Popen(["xdg-open", self.output_folder])
+            if platform.system() == "Windows":
+                os.startfile(self.output_folder)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", self.output_folder])
+            else:
+                subprocess.Popen(["xdg-open", self.output_folder])
+
+    def abrir_post(self):
+        if self.post_url:
+            webbrowser.open(self.post_url)
     
     def abrir_instrucciones(self):
         if self.instrucciones_html and os.path.exists(self.instrucciones_html):
