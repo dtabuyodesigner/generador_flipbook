@@ -28,6 +28,7 @@ from datetime import datetime
 
 import github_pages
 import pdf_tools
+import acortador
 
 # Configuración local (URL/usuario WordPress y, opcionalmente, la password)
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".flipbook_config.json")
@@ -880,13 +881,19 @@ class CreadorFlipbook:
         # Enlace público (se rellena tras publicar en GitHub Pages)
         url_frame = ttk.Frame(left)
         url_frame.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(2, 0))
-        url_frame.columnconfigure(0, weight=1)
+        url_frame.columnconfigure(1, weight=1)
+        ttk.Label(url_frame, text="Corto:").grid(row=0, column=0, sticky=tk.W, padx=(0, 4))
+        self.url_corta_var = tk.StringVar()
+        self.url_corta_entry = ttk.Entry(url_frame, textvariable=self.url_corta_var, state="readonly")
+        self.url_corta_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 4))
+        self.btn_copiar_corta = ttk.Button(url_frame, text="📋 Copiar", command=self._copiar_enlace_corto, state=tk.DISABLED)
+        self.btn_copiar_corta.grid(row=0, column=2)
+        ttk.Label(url_frame, text="Largo:").grid(row=1, column=0, sticky=tk.W, padx=(0, 4), pady=(4, 0))
         self.url_var = tk.StringVar()
         self.url_entry = ttk.Entry(url_frame, textvariable=self.url_var, state="readonly")
-        self.url_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 4))
-        self.btn_copiar = ttk.Button(url_frame, text="📋 Copiar enlace",
-                                     command=self._copiar_enlace, state=tk.DISABLED)
-        self.btn_copiar.grid(row=0, column=1)
+        self.url_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 4), pady=(4, 0))
+        self.btn_copiar = ttk.Button(url_frame, text="📋 Copiar", command=self._copiar_enlace, state=tk.DISABLED)
+        self.btn_copiar.grid(row=1, column=2, pady=(4, 0))
 
         button_frame = ttk.Frame(left)
         button_frame.grid(row=8, column=0, pady=(2, 0))
@@ -1443,7 +1450,8 @@ code {{
 
             def _trabajo():
                 url = self._publicar_seguro(nombre, output_dir)
-                self.root.after(0, lambda: self._fin_publicacion(url, len(images), output_dir))
+                corta = acortador.acortar(url) if url else None
+                self.root.after(0, lambda: self._fin_publicacion(url, corta, len(images), output_dir))
 
             threading.Thread(target=_trabajo, daemon=True).start()
 
@@ -1466,7 +1474,7 @@ code {{
         except Exception:
             return None
 
-    def _fin_publicacion(self, url, n_paginas, output_dir):
+    def _fin_publicacion(self, url, url_corta, n_paginas, output_dir):
         self.progress.stop()
         self._set_controles(True)
         self.post_url = url
@@ -1474,11 +1482,18 @@ code {{
             self.url_var.set(url)
             self.btn_copiar.config(state=tk.NORMAL)
             self.btn_post.config(state=tk.NORMAL)
+            if url_corta:
+                self.url_corta_var.set(url_corta)
+                self.btn_copiar_corta.config(state=tk.NORMAL)
+                enlace_msg = (f"Enlace corto (recomendado):\n{url_corta}\n\n"
+                              f"Si no abre, usa el largo:\n{url}")
+            else:
+                self.url_corta_var.set("(no disponible)")
+                enlace_msg = f"Enlace:\n{url}"
             self.status_label.config(text=f"¡Publicado! ({n_paginas} páginas)", foreground="green")
             messagebox.showinfo("Publicado",
-                "Tu periódico está publicado en internet.\n\n"
-                f"Enlace:\n{url}\n\n"
-                "Pulsa «Copiar enlace» y pégalo en la web del colegio.")
+                "Tu periódico está publicado en internet.\n\n" + enlace_msg +
+                "\n\nCopia el enlace y pégalo en la web del colegio.")
         else:
             self.status_label.config(text=f"Flipbook creado ({n_paginas} páginas). No publicado.", foreground="blue")
             messagebox.showwarning("No se pudo publicar",
@@ -1486,6 +1501,14 @@ code {{
                 "Revisa tu conexión a internet. Si el problema sigue, avisa a Dani.\n\n"
                 f"El periódico está en tu equipo:\n{output_dir}")
         self._limpiar_preview_temp()
+
+    def _copiar_enlace_corto(self):
+        url = self.url_corta_var.get()
+        if url and url != "(no disponible)":
+            self.root.clipboard_clear()
+            self.root.clipboard_append(url)
+            self.root.update()
+            self.status_label.config(text="Enlace corto copiado ✅", foreground="green")
 
     def _copiar_enlace(self):
         """Copia la URL pública al portapapeles."""
