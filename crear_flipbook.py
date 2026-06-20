@@ -1855,20 +1855,25 @@ code {{
         self.dividir_rango = ttk.Entry(cont, width=40)
         self.dividir_rango.grid(row=3, column=0, sticky=tk.W, pady=(2, 4))
 
-        self.dividir_una = tk.BooleanVar(value=False)
-        ttk.Checkbutton(cont, text="Una página por archivo (trocear todo)",
-                        variable=self.dividir_una).grid(row=4, column=0, sticky=tk.W)
+        ttk.Label(cont, text="¿Qué quieres hacer?").grid(row=4, column=0, sticky=tk.W, pady=(6, 0))
+        self.dividir_modo = tk.StringVar(value="uno")
+        ttk.Radiobutton(cont, text="Un solo PDF con esas páginas",
+                        variable=self.dividir_modo, value="uno").grid(row=5, column=0, sticky=tk.W)
+        ttk.Radiobutton(cont, text="Un archivo por cada tramo (cada coma = un archivo)",
+                        variable=self.dividir_modo, value="tramos").grid(row=6, column=0, sticky=tk.W)
+        ttk.Radiobutton(cont, text="Una página por archivo (trocear todo)",
+                        variable=self.dividir_modo, value="pagina").grid(row=7, column=0, sticky=tk.W)
 
         self.dividir_estado = ttk.Label(cont, text="", foreground="blue")
-        self.dividir_estado.grid(row=5, column=0, sticky=tk.W, pady=(6, 2))
+        self.dividir_estado.grid(row=8, column=0, sticky=tk.W, pady=(6, 2))
         self.dividir_progress = ttk.Progressbar(cont, mode="indeterminate")
-        self.dividir_progress.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=2)
+        self.dividir_progress.grid(row=9, column=0, sticky=(tk.W, tk.E), pady=2)
 
         self.btn_dividir = ttk.Button(cont, text="✂ Dividir", command=self._dividir_ejecutar)
-        self.btn_dividir.grid(row=7, column=0, sticky=tk.W, pady=(4, 0))
+        self.btn_dividir.grid(row=10, column=0, sticky=tk.W, pady=(4, 0))
         self.btn_dividir_abrir = ttk.Button(cont, text="📂 Abrir carpeta",
                                             command=self._dividir_abrir_carpeta, state=tk.DISABLED)
-        self.btn_dividir_abrir.grid(row=8, column=0, sticky=tk.W, pady=(4, 0))
+        self.btn_dividir_abrir.grid(row=11, column=0, sticky=tk.W, pady=(4, 0))
         self._dividir_ultima_salida = None
 
     def _dividir_examinar(self):
@@ -1898,7 +1903,7 @@ code {{
             return
         ruta = self.dividir_pdf_path
         texto = self.dividir_rango.get()
-        una = self.dividir_una.get()
+        modo = self.dividir_modo.get()
         carpeta = os.path.abspath(os.path.expanduser("~/Descargas"))
         base = os.path.splitext(os.path.basename(ruta))[0] + "_dividido"
         self.dividir_progress.start()
@@ -1908,8 +1913,13 @@ code {{
         def _w():
             try:
                 total = pdf_tools.paginas_de_pdf(ruta)
-                paginas = pdf_tools.parsear_rango(texto, total)
-                salidas = pdf_tools.dividir_pdf(ruta, paginas, carpeta, base, una_por_archivo=una)
+                if modo == "tramos":
+                    tramos = pdf_tools.parsear_tramos(texto, total)
+                    salidas = pdf_tools.dividir_por_tramos(ruta, tramos, carpeta, base)
+                else:
+                    paginas = pdf_tools.parsear_rango(texto, total)
+                    salidas = pdf_tools.dividir_pdf(ruta, paginas, carpeta, base,
+                                                    una_por_archivo=(modo == "pagina"))
                 self.root.after(0, lambda: _ok(salidas))
             except Exception as e:
                 msg = str(e)
