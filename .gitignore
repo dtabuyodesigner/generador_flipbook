@@ -12,3 +12,13 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Tokens y credenciales (NUNCA subir a GitHub)
+*.txt
+token*
+*token*
+*secret*
+*password*
+*credentials*
+.env
+config.json
