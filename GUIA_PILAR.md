@@ -13,13 +13,30 @@ solo periódico, en el orden que tú quieras.
 
 1. Pestaña **«1. Preparar PDF»**.
 2. **➕ Añadir archivos**: elige los Word y PDF (puedes elegir varios a la vez).
-3. Ordénalos con **🔼 Subir / 🔽 Bajar / 🗑 Quitar** (el orden de la lista es el
-   orden del periódico: puedes poner 6º, luego 4º, luego 1º… como quieras).
+   - Al seleccionar uno en la lista, verás una **miniatura** de su primera página.
+3. Ordénalos con **🔼 Subir / 🔽 Bajar / 🗑 Quitar** **o arrastrándolos** con el
+   ratón (el orden de la lista es el orden del periódico: 6º, 4º, 1º… como quieras).
 4. Pulsa **«📎 Unir y crear el PDF del periódico»**.
-   - Los Word se convierten solos y se unen en un único PDF.
-   - La app salta sola a la pestaña 2 con ese PDF ya puesto.
+   - Los Word se convierten solos y se unen en un único PDF, guardado en **Descargas**.
+   - Luego puedes pulsar **«📂 Abrir carpeta»** (si solo querías el PDF unido) o
+     **«➡ Generar flipbook con este PDF»** (si quieres publicarlo).
 
 > Si ya tienes el periódico en un solo PDF, sáltate esta pestaña y empieza en la 2.
+> Si solo quieres **juntar PDFs** (sin publicar nada en internet), esta pestaña te
+> vale: une y abre la carpeta. **No hace falta internet** para esto.
+
+---
+
+## Pestaña «✂ Dividir PDF» — partir un PDF
+
+Para quedarte solo con algunas páginas de un PDF o trocearlo.
+
+1. Pestaña **«✂ Dividir PDF»** → **«Examinar…»** y elige el PDF (te dice cuántas
+   páginas tiene).
+2. Escribe qué páginas quieres: por ejemplo **`1-4, 7`** (vacío = todas).
+   - O marca **«Una página por archivo»** para separarlo entero.
+3. Pulsa **«✂ Dividir»** → los archivos se crean en **Descargas**
+   (**📂 Abrir carpeta** para verlos). Sin internet.
 
 ---
 
