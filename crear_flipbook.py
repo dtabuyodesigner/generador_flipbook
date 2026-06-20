@@ -1049,11 +1049,25 @@ class CreadorFlipbook:
         for ruta in self.archivos_preparar:
             self.lista_preparar.insert(tk.END, os.path.basename(ruta))
 
+    def _dir_inicial(self):
+        d = cargar_config().get("ultima_carpeta", "")
+        return d if d and os.path.isdir(d) else os.path.expanduser("~")
+
+    def _recordar_dir(self, ruta):
+        if not ruta:
+            return
+        cfg = cargar_config()
+        cfg["ultima_carpeta"] = os.path.dirname(os.path.abspath(ruta))
+        guardar_config(cfg)
+
     def _preparar_anadir(self):
         rutas = filedialog.askopenfilenames(
             title="Elige documentos (Word o PDF)",
+            initialdir=self._dir_inicial(),
             filetypes=[("Documentos", "*.pdf *.doc *.docx"),
                        ("PDF", "*.pdf"), ("Word", "*.doc *.docx")])
+        if rutas:
+            self._recordar_dir(rutas[0])
         protegidos = []
         for r in rutas:
             if r.lower().endswith(".pdf") and pdf_tools.esta_encriptado(r):
@@ -1314,10 +1328,11 @@ class CreadorFlipbook:
 
     def seleccionar_pdf(self):
         pdf = filedialog.askopenfilename(
-            title="Selecciona el PDF",
+            title="Selecciona el PDF", initialdir=self._dir_inicial(),
             filetypes=[("PDF", "*.pdf"), ("Todos", "*.*")]
         )
         if pdf:
+            self._recordar_dir(pdf)
             self.pdf_path.set(pdf)
             self.status_label.config(text=f"PDF: {os.path.basename(pdf)}", foreground="green")
     
@@ -1844,9 +1859,11 @@ code {{
 
     def _dividir_examinar(self):
         ruta = filedialog.askopenfilename(title="Elige un PDF",
+                                          initialdir=self._dir_inicial(),
                                           filetypes=[("PDF", "*.pdf")])
         if not ruta:
             return
+        self._recordar_dir(ruta)
         if pdf_tools.esta_encriptado(ruta):
             messagebox.showwarning("PDF protegido",
                 f"El PDF «{os.path.basename(ruta)}» está protegido con contraseña; "
