@@ -3,8 +3,10 @@
 Sigue los pasos **en orden**. No hace falta saber de informática. Tardarás unos
 20 minutos la primera vez.
 
-> Esto se hace en TU PC con Windows (el de construir). Lo que le des a Pilar
-> luego no necesita nada de esto.
+> ⚠️ **TODO esto se hace en un PC con WINDOWS** (el "PC de construcción").
+> **No en Zorin/Linux**: el `.exe` de Windows solo se puede crear desde Windows.
+> Ese PC con Windows es el único que necesita Python y Poppler. El equipo donde
+> Pilar solo USA el programa no necesita instalar nada.
 
 ---
 
