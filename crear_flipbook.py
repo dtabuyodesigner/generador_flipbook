@@ -883,6 +883,9 @@ class CreadorFlipbook:
         self.btn_instrucciones = ttk.Button(button_frame, text="📋 Instrucciones", command=self.abrir_instrucciones, state=tk.DISABLED)
         self.btn_instrucciones.pack(side=tk.LEFT, padx=4)
 
+        self.btn_panel = ttk.Button(button_frame, text="📚 Mis periódicos", command=self.abrir_panel_periodicos)
+        self.btn_panel.pack(side=tk.LEFT, padx=4)
+
         # ===================== COLUMNA DERECHA: vista previa =====================
         right = ttk.LabelFrame(root, text="👁 Vista previa de páginas", padding="10")
         right.grid(row=0, column=1, sticky=(tk.N, tk.S, tk.E, tk.W), padx=(0, 12), pady=12)
@@ -1297,6 +1300,93 @@ code {{
             self.root.clipboard_append(url)
             self.root.update()
             self.status_label.config(text="Enlace copiado ✅", foreground="green")
+
+    def abrir_panel_periodicos(self):
+        win = tk.Toplevel(self.root)
+        win.title("Mis periódicos publicados")
+        win.geometry("720x420")
+        cont = ttk.Frame(win, padding=10)
+        cont.pack(fill=tk.BOTH, expand=True)
+        estado = ttk.Label(cont, text="Cargando...", foreground="blue")
+        estado.pack(anchor=tk.W)
+        filas = ttk.Frame(cont)
+        filas.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+
+        def pintar(items, error=None):
+            for w in filas.winfo_children():
+                w.destroy()
+            if error:
+                estado.config(text="No se pudo cargar la lista. Revisa tu conexión "
+                                   "a internet. Si sigue, avisa a Dani.", foreground="red")
+                return
+            if not items:
+                estado.config(text="Aún no hay periódicos publicados.", foreground="blue")
+                return
+            estado.config(text=f"{len(items)} periódico(s) publicado(s):", foreground="green")
+            for it in items:
+                fila = ttk.Frame(filas)
+                fila.pack(fill=tk.X, pady=2)
+                ttk.Label(fila, text=it["nombre"], width=26, anchor=tk.W).pack(side=tk.LEFT)
+                ttk.Button(fila, text="📋 Copiar", width=10,
+                           command=lambda u=it["url"]: self._copiar_url(u)).pack(side=tk.LEFT, padx=2)
+                ttk.Button(fila, text="🌐 Abrir", width=9,
+                           command=lambda u=it["url"]: webbrowser.open(u)).pack(side=tk.LEFT, padx=2)
+                ttk.Button(fila, text="🔄 Actualizar", width=12,
+                           command=lambda n=it["nombre"]: self._actualizar_desde_panel(win, n)).pack(side=tk.LEFT, padx=2)
+                ttk.Button(fila, text="🗑 Borrar", width=10,
+                           command=lambda n=it["nombre"]: self._borrar_desde_panel(win, n, recargar)).pack(side=tk.LEFT, padx=2)
+
+        def recargar():
+            estado.config(text="Cargando...", foreground="blue")
+            def _w():
+                token = self._leer_token_github()
+                try:
+                    items = github_pages.listar(token) if token else None
+                    err = None if token else "sin-token"
+                except Exception:
+                    items, err = None, "error"
+                self.root.after(0, lambda: pintar(items or [], error=err))
+            threading.Thread(target=_w, daemon=True).start()
+
+        recargar()
+
+    def _copiar_url(self, url):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(url)
+        self.root.update()
+
+    def _actualizar_desde_panel(self, win, nombre):
+        self.nombre_output.delete(0, tk.END)
+        self.nombre_output.insert(0, nombre)
+        self._actualizar_slug_label()
+        win.destroy()
+        messagebox.showinfo("Actualizar periódico",
+            f"Para actualizar «{nombre}»: elige el PDF nuevo con «Examinar…» y pulsa "
+            "«Generar enlace para la web». Se sobrescribirá manteniendo el mismo enlace.")
+
+    def _borrar_desde_panel(self, win, nombre, recargar):
+        if not messagebox.askyesno("Borrar periódico",
+            f"¿Seguro que quieres borrar «{nombre}»?\n\n"
+            "El enlace dejará de funcionar y tendrás que quitarlo también de la web "
+            "del colegio (Drupal)."):
+            return
+        def _w():
+            token = self._leer_token_github()
+            ok = False
+            try:
+                if token:
+                    github_pages.borrar(token, nombre)
+                    ok = True
+            except Exception:
+                ok = False
+            self.root.after(0, lambda: _fin(ok))
+        def _fin(ok):
+            if not ok:
+                messagebox.showwarning("No se pudo borrar",
+                    "No se ha podido borrar. Revisa tu conexión a internet. "
+                    "Si el problema sigue, avisa a Dani.")
+            recargar()
+        threading.Thread(target=_w, daemon=True).start()
 
     def _actualizar_slug_label(self, event=None):
         s = github_pages.slug(self.nombre_output.get())
