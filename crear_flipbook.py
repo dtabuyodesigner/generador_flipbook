@@ -1014,6 +1014,19 @@ class CreadorFlipbook:
         ttk.Button(orden, text="🔽 Bajar", width=12, command=self._preparar_bajar).pack(pady=2)
         ttk.Button(orden, text="🗑 Quitar", width=12, command=self._preparar_quitar).pack(pady=2)
 
+        # Miniatura del archivo seleccionado
+        self.preparar_miniatura = ttk.Label(cont, text="(selecciona un archivo)",
+                                             anchor=tk.CENTER, relief="solid",
+                                             borderwidth=1, width=24)
+        self.preparar_miniatura.grid(row=2, column=2, sticky=(tk.N, tk.S), padx=(8, 0))
+        self._mini_photo = None       # referencia viva del PhotoImage
+        self._mini_pedido = 0         # para descartar miniaturas obsoletas
+        self.lista_preparar.bind("<<ListboxSelect>>", self._preparar_miniatura_sel)
+        # Arrastrar para reordenar
+        self.lista_preparar.bind("<Button-1>", self._preparar_drag_inicio)
+        self.lista_preparar.bind("<B1-Motion>", self._preparar_drag_mueve)
+        self._drag_idx = None
+
         self.preparar_estado = ttk.Label(cont, text="", foreground="blue")
         self.preparar_estado.grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(6, 2))
         self.preparar_progress = ttk.Progressbar(cont, mode="indeterminate")
@@ -1022,6 +1035,14 @@ class CreadorFlipbook:
         self.btn_unir = ttk.Button(cont, text="📎 Unir y crear el PDF del periódico",
                                    command=self._preparar_unir)
         self.btn_unir.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(4, 0))
+
+        self.pdf_preparado = None
+        self.btn_preparar_abrir = ttk.Button(cont, text="📂 Abrir carpeta",
+                                              command=self._preparar_abrir_carpeta, state=tk.DISABLED)
+        self.btn_preparar_abrir.grid(row=6, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        self.btn_preparar_flipbook = ttk.Button(cont, text="➡ Generar flipbook con este PDF",
+                                                 command=self._preparar_ir_flipbook, state=tk.DISABLED)
+        self.btn_preparar_flipbook.grid(row=7, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(2, 0))
 
     def _preparar_refrescar_lista(self):
         self.lista_preparar.delete(0, tk.END)
@@ -1033,9 +1054,18 @@ class CreadorFlipbook:
             title="Elige documentos (Word o PDF)",
             filetypes=[("Documentos", "*.pdf *.doc *.docx"),
                        ("PDF", "*.pdf"), ("Word", "*.doc *.docx")])
+        protegidos = []
         for r in rutas:
+            if r.lower().endswith(".pdf") and pdf_tools.esta_encriptado(r):
+                protegidos.append(os.path.basename(r))
+                continue
             self.archivos_preparar.append(r)
         self._preparar_refrescar_lista()
+        if protegidos:
+            messagebox.showwarning("PDF(s) protegidos",
+                "Estos PDF están protegidos con contraseña y no se han añadido:\n\n"
+                + "\n".join(protegidos) +
+                "\n\nQuítales la contraseña e inténtalo de nuevo.")
 
     def _preparar_sel(self):
         sel = self.lista_preparar.curselection()
@@ -1065,6 +1095,72 @@ class CreadorFlipbook:
             return
         del self.archivos_preparar[i]
         self._preparar_refrescar_lista()
+
+    def _preparar_drag_inicio(self, event):
+        self._drag_idx = self.lista_preparar.nearest(event.y)
+
+    def _preparar_drag_mueve(self, event):
+        if self._drag_idx is None:
+            return
+        destino = self.lista_preparar.nearest(event.y)
+        if destino < 0 or destino == self._drag_idx or destino >= len(self.archivos_preparar):
+            return
+        i = self._drag_idx
+        self.archivos_preparar[i], self.archivos_preparar[destino] = \
+            self.archivos_preparar[destino], self.archivos_preparar[i]
+        self._preparar_refrescar_lista()
+        self.lista_preparar.selection_set(destino)
+        self._drag_idx = destino
+
+    def _preparar_miniatura_sel(self, event=None):
+        sel = self.lista_preparar.curselection()
+        if not sel:
+            return
+        ruta = self.archivos_preparar[sel[0]]
+        self._mini_pedido += 1
+        pedido = self._mini_pedido
+        if not ruta.lower().endswith(".pdf") or not HAS_IMAGETK:
+            self.preparar_miniatura.config(
+                image="", text="Vista previa no disponible\n(se convertirá al unir)")
+            self._mini_photo = None
+            return
+        self.preparar_miniatura.config(image="", text="Cargando…")
+
+        def _w():
+            try:
+                pop = detectar_poppler()
+                kw = {"dpi": 60, "first_page": 1, "last_page": 1}
+                if pop:
+                    kw["poppler_path"] = pop
+                imgs = convert_from_path(ruta, **kw)
+                img = imgs[0]
+                img.thumbnail((180, 240), Image.Resampling.LANCZOS)
+                self.root.after(0, lambda: _set(img, pedido))
+            except Exception:
+                self.root.after(0, lambda: _fail(pedido))
+
+        def _set(img, pedido):
+            if pedido != self._mini_pedido:
+                return  # selección cambió; descartar
+            self._mini_photo = ImageTk.PhotoImage(img)
+            self.preparar_miniatura.config(image=self._mini_photo, text="")
+
+        def _fail(pedido):
+            if pedido != self._mini_pedido:
+                return
+            self.preparar_miniatura.config(image="", text="Vista previa no disponible")
+            self._mini_photo = None
+
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _preparar_abrir_carpeta(self):
+        if self.pdf_preparado:
+            self._abrir_carpeta_ruta(self.pdf_preparado)
+
+    def _preparar_ir_flipbook(self):
+        if self.pdf_preparado:
+            self.pdf_path.set(self.pdf_preparado)
+            self.notebook.select(self.tab_flipbook)
 
     def _preparar_unir(self):
         if not self.archivos_preparar:
@@ -1096,13 +1192,14 @@ class CreadorFlipbook:
         def _ok(ruta):
             self.preparar_progress.stop()
             self.btn_unir.config(state=tk.NORMAL)
-            self.preparar_estado.config(text="PDF creado ✅", foreground="green")
-            self.pdf_path.set(ruta)
-            self.notebook.select(self.tab_flipbook)
+            self.pdf_preparado = ruta
+            self.preparar_estado.config(text=f"✅ PDF guardado en: {ruta}", foreground="green")
+            self.btn_preparar_abrir.config(state=tk.NORMAL)
+            self.btn_preparar_flipbook.config(state=tk.NORMAL)
             messagebox.showinfo("PDF listo",
-                "He unido los documentos en un PDF.\n\n"
-                "Ahora pulsa «Generar vista previa» para verlo y, si te gusta, "
-                "«Generar enlace para la web».")
+                "He unido los documentos en un PDF, guardado en tu carpeta Descargas.\n\n"
+                "Puedes abrir la carpeta, o pulsar «Generar flipbook con este PDF» "
+                "si quieres publicarlo en internet.")
 
         def _err(msg):
             self.preparar_progress.stop()
