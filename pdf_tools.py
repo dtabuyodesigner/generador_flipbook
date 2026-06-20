@@ -225,6 +225,65 @@ def dividir_pdf(ruta, paginas, carpeta_salida, nombre_base, una_por_archivo=Fals
     return salidas
 
 
+def parsear_tramos(texto, total):
+    """Como parsear_rango pero devuelve UNA lista por cada tramo (separado por
+    comas). Vacío -> un único tramo con todas las páginas."""
+    texto = (texto or "").strip()
+    if not texto:
+        return [list(range(1, total + 1))]
+    tramos = []
+    for parte in texto.split(","):
+        parte = parte.strip()
+        if not parte:
+            continue
+        if "-" in parte:
+            trozos = parte.split("-", 1)
+            try:
+                a, b = int(trozos[0].strip()), int(trozos[1].strip())
+            except ValueError:
+                raise PdfToolsError(f"Rango inválido: '{parte}'")
+            if a > b:
+                a, b = b, a
+            tramo = list(range(a, b + 1))
+        else:
+            try:
+                tramo = [int(parte)]
+            except ValueError:
+                raise PdfToolsError(f"Rango inválido: '{parte}'")
+        for p in tramo:
+            if p < 1 or p > total:
+                raise PdfToolsError(f"La página {p} está fuera de rango (1-{total}).")
+        tramos.append(tramo)
+    if not tramos:
+        return [list(range(1, total + 1))]
+    return tramos
+
+
+def dividir_por_tramos(ruta, tramos, carpeta_salida, nombre_base):
+    """Crea un PDF por cada tramo: nombre_base_parte1.pdf, _parte2.pdf, ...
+    Devuelve la lista de rutas creadas."""
+    from pypdf import PdfReader, PdfWriter
+    if esta_encriptado(ruta):
+        raise ConversionError(
+            f"El PDF '{os.path.basename(ruta)}' está protegido con contraseña; "
+            "quítasela e inténtalo de nuevo.")
+    os.makedirs(carpeta_salida, exist_ok=True)
+    reader = PdfReader(ruta)
+    salidas = []
+    for i, tramo in enumerate(tramos, 1):
+        writer = PdfWriter()
+        try:
+            for p in tramo:
+                writer.add_page(reader.pages[p - 1])
+            out = os.path.join(carpeta_salida, f"{nombre_base}_parte{i}.pdf")
+            with open(out, "wb") as f:
+                writer.write(f)
+        finally:
+            writer.close()
+        salidas.append(out)
+    return salidas
+
+
 def preparar_periodico(archivos_ordenados, carpeta_salida, nombre_pdf):
     """Convierte cada archivo a PDF (en orden) y los une en
     carpeta_salida/<nombre_pdf>.pdf. Devuelve la ruta del PDF combinado."""

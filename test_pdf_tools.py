@@ -112,3 +112,24 @@ def test_unir_avisa_encriptado(tmp_path):
     enc = _encriptar(p, str(tmp_path / "enc.pdf"))
     with pytest.raises(pt.ConversionError):
         pt.unir_pdfs([enc], str(tmp_path / "o.pdf"))
+
+
+def test_parsear_tramos():
+    assert pt.parsear_tramos("1-3,4,5-9", 9) == [[1, 2, 3], [4], [5, 6, 7, 8, 9]]
+
+
+def test_parsear_tramos_vacio():
+    assert pt.parsear_tramos("", 3) == [[1, 2, 3]]
+
+
+def test_parsear_tramos_fuera_de_rango():
+    with pytest.raises(pt.PdfToolsError):
+        pt.parsear_tramos("1-99", 5)
+
+
+def test_dividir_por_tramos(tmp_path):
+    p = _hacer_pdf(str(tmp_path / "x.pdf"), 14)
+    tramos = pt.parsear_tramos("1-3,4,5-9,10-14", 14)
+    salidas = pt.dividir_por_tramos(p, tramos, str(tmp_path / "out"), "doc")
+    assert len(salidas) == 4
+    assert [len(PdfReader(s).pages) for s in salidas] == [3, 1, 5, 5]
