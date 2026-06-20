@@ -25,11 +25,32 @@ if not exist github_pages.py (
     exit /b 1
 )
 
+rem --- Detectar Poppler para empaquetarlo DENTRO del .exe ---
+rem Asi el equipo de Pilar no necesita instalar nada (solo el .exe + el token).
+set "POPPLER_BIN="
+if exist "C:\poppler\Library\bin\pdftoppm.exe" set "POPPLER_BIN=C:\poppler\Library\bin"
+if not defined POPPLER_BIN if exist "C:\poppler\bin\pdftoppm.exe" set "POPPLER_BIN=C:\poppler\bin"
+if not defined POPPLER_BIN if exist "C:\Program Files\poppler\Library\bin\pdftoppm.exe" set "POPPLER_BIN=C:\Program Files\poppler\Library\bin"
+
+if not defined POPPLER_BIN (
+    echo AVISO: no encontre Poppler en C:\poppler.
+    echo El .exe se creara SIN Poppler dentro, y el equipo de Pilar necesitaria
+    echo instalar Poppler aparte. Para empaquetarlo, instala Poppler en C:\poppler
+    echo (ver INSTRUCCIONES_WINDOWS.md) y vuelve a ejecutar este build.
+    echo.
+    pause
+)
+
 echo Instalando dependencias (pdf2image, pillow, pyinstaller)...
 pip install --quiet pdf2image pillow pyinstaller
 
 echo Construyendo el .exe (esto tarda 1-2 minutos)...
-pyinstaller --onefile --windowed --name "GeneradorPeriodico" --clean crear_flipbook.py
+if defined POPPLER_BIN (
+    echo Empaquetando Poppler desde: %POPPLER_BIN%
+    pyinstaller --onefile --windowed --name "GeneradorPeriodico" --clean --add-data "%POPPLER_BIN%;poppler/bin" crear_flipbook.py
+) else (
+    pyinstaller --onefile --windowed --name "GeneradorPeriodico" --clean crear_flipbook.py
+)
 
 if errorlevel 1 (
     echo.
@@ -54,6 +75,7 @@ echo.
 echo ============================================
 echo  EXITO!
 echo  El .exe esta en: dist\GeneradorPeriodico.exe
+if defined POPPLER_BIN echo  (Poppler va dentro del .exe: Pilar no instala nada)
 echo  Reparte la carpeta dist\ completa
 echo  (GeneradorPeriodico.exe + tokengenerarflipbook.txt).
 echo ============================================

@@ -52,8 +52,13 @@ Ejecutar:
 
 ## Uso en Windows (.exe para Pilar)
 
-Ver **INSTRUCCIONES_WINDOWS.md** (descargar de GitHub → `build.bat` → repartir
-`dist\` con el .exe + el token). Guía de uso diario de Pilar: **GUIA_PILAR.md**.
+- **INSTALAR_WINDOWS_FACIL.md** — guía paso a paso "para tontos" (recomendada).
+- **INSTRUCCIONES_WINDOWS.md** — versión técnica (descargar de GitHub →
+  `build.bat` → repartir `dist\` con el .exe + el token).
+- **GUIA_PILAR.md** — uso diario de la usuaria final.
+
+`build.bat` empaqueta Python y Poppler dentro del `.exe`, así que el equipo de
+Pilar no necesita instalar nada (solo el `.exe` + `tokengenerarflipbook.txt`).
 
 ## Tests
 

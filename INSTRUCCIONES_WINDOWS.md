@@ -30,16 +30,30 @@ git clone https://github.com/dtabuyodesigner/generador_flipbook.git GeneradorPer
 
 ---
 
-## PASO 2 — Instalar requisitos (una sola vez en ese PC)
+## PASO 2 — Instalar requisitos (solo en el PC donde construyes)
+
+> Esto es solo para el **PC de construcción** (donde generas el .exe).
+> El equipo de **Pilar NO necesita instalar nada**: Python y Poppler quedan
+> dentro del `.exe`.
+
 
 ### 2.1 Python
 - Descarga Python 3.11+ desde https://www.python.org/downloads/
 - **IMPORTANTE:** al instalar marca **"Add Python to PATH"**.
 
 ### 2.2 Poppler (necesario para leer PDFs)
-- Descarga el ZIP más reciente de https://github.com/oschwartz10612/poppler-windows/releases
-- Extrae en `C:\Program Files\poppler-XX.XX.X\`
-  (la app busca Poppler automáticamente en rutas habituales de `C:\Program Files`).
+- Descarga el ZIP más reciente (`Release-XX.XX.X-X.zip`) de
+  https://github.com/oschwartz10612/poppler-windows/releases
+- Extráelo y coloca/renombra la carpeta como **`C:\poppler`**, de modo que exista:
+  ```
+  C:\poppler\Library\bin\pdftoppm.exe
+  ```
+- La app detecta Poppler automáticamente en esa ruta (también valen
+  `C:\poppler\bin`, `C:\Program Files\poppler\Library\bin`, o una carpeta
+  `poppler\` junto al `.exe`). No hace falta tocar el PATH.
+- **`build.bat` empaqueta este Poppler DENTRO del `.exe`**, así que el equipo de
+  Pilar no necesita instalarlo. (Si no encuentra Poppler en `C:\poppler`,
+  `build.bat` avisa y crea el `.exe` sin él.)
 
 ---
 
@@ -89,6 +103,7 @@ GeneradorPeriodico\
 ```
 
 Pilar solo tiene que **hacer doble clic en `GeneradorPeriodico.exe`**.
+**No necesita instalar Python ni Poppler ni nada**: todo va dentro del `.exe`.
 Cómo lo usa ella en el día a día: ver **`GUIA_PILAR.md`**.
 
 ---
