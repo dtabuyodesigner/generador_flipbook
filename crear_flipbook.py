@@ -995,6 +995,7 @@ class CreadorFlipbook:
         cont = ttk.Frame(parent, padding="12")
         cont.pack(fill=tk.BOTH, expand=True)
         cont.columnconfigure(0, weight=1)
+        cont.columnconfigure(2, weight=0)  # columna de la miniatura
         cont.rowconfigure(2, weight=1)
 
         ttk.Label(cont, text="Añade los documentos (Word o PDF) y ponlos en el "
@@ -1025,7 +1026,9 @@ class CreadorFlipbook:
         # Arrastrar para reordenar
         self.lista_preparar.bind("<Button-1>", self._preparar_drag_inicio)
         self.lista_preparar.bind("<B1-Motion>", self._preparar_drag_mueve)
+        self.lista_preparar.bind("<ButtonRelease-1>", self._preparar_drag_fin)
         self._drag_idx = None
+        self._dragging = False
 
         self.preparar_estado = ttk.Label(cont, text="", foreground="blue")
         self.preparar_estado.grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(6, 2))
@@ -1112,6 +1115,7 @@ class CreadorFlipbook:
 
     def _preparar_drag_inicio(self, event):
         self._drag_idx = self.lista_preparar.nearest(event.y)
+        self._dragging = False
 
     def _preparar_drag_mueve(self, event):
         if self._drag_idx is None:
@@ -1119,14 +1123,24 @@ class CreadorFlipbook:
         destino = self.lista_preparar.nearest(event.y)
         if destino < 0 or destino == self._drag_idx or destino >= len(self.archivos_preparar):
             return
-        i = self._drag_idx
-        self.archivos_preparar[i], self.archivos_preparar[destino] = \
-            self.archivos_preparar[destino], self.archivos_preparar[i]
+        self._dragging = True
+        # mover (pop+insert) en vez de swap: correcto aunque el ratón salte varias filas
+        item = self.archivos_preparar.pop(self._drag_idx)
+        self.archivos_preparar.insert(destino, item)
         self._preparar_refrescar_lista()
         self.lista_preparar.selection_set(destino)
         self._drag_idx = destino
 
+    def _preparar_drag_fin(self, event):
+        arrastrado = self._dragging
+        self._drag_idx = None
+        self._dragging = False
+        if arrastrado:
+            self._preparar_miniatura_sel()  # una sola miniatura al soltar
+
     def _preparar_miniatura_sel(self, event=None):
+        if self._dragging:
+            return  # no generar miniaturas en ráfaga mientras se arrastra
         sel = self.lista_preparar.curselection()
         if not sel:
             return

@@ -203,20 +203,24 @@ def dividir_pdf(ruta, paginas, carpeta_salida, nombre_base, una_por_archivo=Fals
     if una_por_archivo:
         for p in paginas:
             writer = PdfWriter()
-            writer.add_page(reader.pages[p - 1])
-            out = os.path.join(carpeta_salida, f"{nombre_base}_pagina_{p:03d}.pdf")
-            with open(out, "wb") as f:
-                writer.write(f)
-            writer.close()
+            try:
+                writer.add_page(reader.pages[p - 1])
+                out = os.path.join(carpeta_salida, f"{nombre_base}_pagina_{p:03d}.pdf")
+                with open(out, "wb") as f:
+                    writer.write(f)
+            finally:
+                writer.close()
             salidas.append(out)
     else:
         writer = PdfWriter()
-        for p in paginas:
-            writer.add_page(reader.pages[p - 1])
-        out = os.path.join(carpeta_salida, f"{nombre_base}.pdf")
-        with open(out, "wb") as f:
-            writer.write(f)
-        writer.close()
+        try:
+            for p in paginas:
+                writer.add_page(reader.pages[p - 1])
+            out = os.path.join(carpeta_salida, f"{nombre_base}.pdf")
+            with open(out, "wb") as f:
+                writer.write(f)
+        finally:
+            writer.close()
         salidas.append(out)
     return salidas
 
