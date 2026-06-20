@@ -125,12 +125,100 @@ def unir_pdfs(rutas_ordenadas, ruta_salida):
     writer = PdfWriter()
     try:
         for r in rutas_ordenadas:
+            if esta_encriptado(r):
+                raise ConversionError(
+                    f"El PDF '{os.path.basename(r)}' está protegido con contraseña; "
+                    "quítasela e inténtalo de nuevo.")
             writer.append(r)
         with open(ruta_salida, "wb") as f:
             writer.write(f)
     finally:
         writer.close()
     return ruta_salida
+
+
+def esta_encriptado(ruta):
+    """True si el PDF está protegido con contraseña. False si no es PDF/ilegible."""
+    try:
+        from pypdf import PdfReader
+        return bool(PdfReader(ruta).is_encrypted)
+    except Exception:
+        return False
+
+
+def paginas_de_pdf(ruta):
+    """Número de páginas de un PDF. Lanza PdfToolsError si está protegido/ilegible."""
+    from pypdf import PdfReader
+    if esta_encriptado(ruta):
+        raise PdfToolsError(
+            f"El PDF '{os.path.basename(ruta)}' está protegido con contraseña; "
+            "quítasela e inténtalo de nuevo.")
+    try:
+        return len(PdfReader(ruta).pages)
+    except Exception:
+        raise PdfToolsError(f"No se pudo leer el PDF: {os.path.basename(ruta)}")
+
+
+def parsear_rango(texto, total):
+    """Convierte '1-4, 7, 9-11' en [1,2,3,4,7,9,10,11]. Vacío = todas.
+    Lanza PdfToolsError si hay sintaxis inválida o páginas fuera de 1..total."""
+    texto = (texto or "").strip()
+    if not texto:
+        return list(range(1, total + 1))
+    paginas = []
+    for parte in texto.split(","):
+        parte = parte.strip()
+        if not parte:
+            continue
+        if "-" in parte:
+            trozos = parte.split("-", 1)
+            try:
+                a, b = int(trozos[0].strip()), int(trozos[1].strip())
+            except ValueError:
+                raise PdfToolsError(f"Rango inválido: '{parte}'")
+            if a > b:
+                a, b = b, a
+            paginas.extend(range(a, b + 1))
+        else:
+            try:
+                paginas.append(int(parte))
+            except ValueError:
+                raise PdfToolsError(f"Rango inválido: '{parte}'")
+    for p in paginas:
+        if p < 1 or p > total:
+            raise PdfToolsError(f"La página {p} está fuera de rango (1-{total}).")
+    return paginas
+
+
+def dividir_pdf(ruta, paginas, carpeta_salida, nombre_base, una_por_archivo=False):
+    """Crea PDF(s) con las páginas indicadas (1-based) en orden. Devuelve rutas."""
+    from pypdf import PdfReader, PdfWriter
+    if esta_encriptado(ruta):
+        raise ConversionError(
+            f"El PDF '{os.path.basename(ruta)}' está protegido con contraseña; "
+            "quítasela e inténtalo de nuevo.")
+    os.makedirs(carpeta_salida, exist_ok=True)
+    reader = PdfReader(ruta)
+    salidas = []
+    if una_por_archivo:
+        for p in paginas:
+            writer = PdfWriter()
+            writer.add_page(reader.pages[p - 1])
+            out = os.path.join(carpeta_salida, f"{nombre_base}_pagina_{p:03d}.pdf")
+            with open(out, "wb") as f:
+                writer.write(f)
+            writer.close()
+            salidas.append(out)
+    else:
+        writer = PdfWriter()
+        for p in paginas:
+            writer.add_page(reader.pages[p - 1])
+        out = os.path.join(carpeta_salida, f"{nombre_base}.pdf")
+        with open(out, "wb") as f:
+            writer.write(f)
+        writer.close()
+        salidas.append(out)
+    return salidas
 
 
 def preparar_periodico(archivos_ordenados, carpeta_salida, nombre_pdf):
