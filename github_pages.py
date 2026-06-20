@@ -84,14 +84,25 @@ def _asegurar_rama(token):
 
 
 def _asegurar_pages(token):
-    """Activa GitHub Pages si no está. Ignora 409 (ya activo) y 422."""
+    """Best-effort: activa GitHub Pages si no está ya activo. Nunca bloquea la
+    publicación: si Pages ya está activo, o el token no tiene permiso para
+    crearlo, se ignora (el contenido se publica igual con permiso de Contents).
+
+    Activar Pages vía API solo hace falta UNA vez por repo; un token
+    fine-grained de Contents/Pages puede no poder crearlo (403), pero como en
+    este repo Pages ya está activo, esa llamada se omite."""
+    try:
+        _request(token, "GET", f"{API}/pages")
+        return  # ya está activo
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return  # 403/otros: no bloquear; Pages probablemente ya configurado
+    # Solo si NO existía (404) intentamos crearlo, en best-effort
     try:
         _request(token, "POST", f"{API}/pages",
                  {"source": {"branch": BRANCH, "path": "/"}})
-    except urllib.error.HTTPError as e:
-        if e.code in (409, 422):
-            return
-        raise
+    except urllib.error.HTTPError:
+        return
 
 
 def _arbol_actual(token):
