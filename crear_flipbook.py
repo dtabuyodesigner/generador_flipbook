@@ -1228,9 +1228,15 @@ code {{
             # El flipbook local YA está creado. La subida a GitHub Pages va aparte
             # para que un fallo de red nunca rompa el resultado local.
 
-            # Aviso de sobrescritura (antes de lanzar el hilo)
+            # Aviso de sobrescritura (antes de lanzar el hilo). Si la comprobación
+            # de red falla, se omite el aviso y se sigue (el hilo de publicación
+            # ya avisa amablemente si hay problemas de conexión).
             token = self._leer_token_github()
-            if token and github_pages.existe(token, nombre):
+            try:
+                ya_existe = bool(token) and github_pages.existe(token, nombre)
+            except Exception:
+                ya_existe = False
+            if ya_existe:
                 if not messagebox.askyesno(
                     "Ya existe",
                     f"Ya hay un periódico publicado con el nombre «{github_pages.slug(nombre)}».\n\n"
@@ -1409,29 +1415,6 @@ code {{
         if cfg.get("github_token"):
             return _desofuscar(cfg["github_token"])
         return None
-
-    def subir_a_github(self, nombre, output_dir):
-        """Publica en GitHub Pages. Devuelve la URL o None. El flipbook local
-        nunca se rompe aunque falle la subida."""
-        token = self._leer_token_github()
-        if not token:
-            messagebox.showwarning(
-                "No se pudo publicar",
-                "No se ha podido publicar en internet.\n\n"
-                "Revisa tu conexión a internet. Si el problema sigue, avisa a Dani.\n\n"
-                "El periódico se ha creado igualmente en tu equipo.")
-            return None
-        try:
-            self.status_label.config(text="Publicando en internet...", foreground="orange")
-            self.root.update()
-            return github_pages.publicar(token, nombre, output_dir)
-        except Exception:
-            messagebox.showwarning(
-                "No se pudo publicar",
-                "No se ha podido publicar en internet.\n\n"
-                "Revisa tu conexión a internet. Si el problema sigue, avisa a Dani.\n\n"
-                "El periódico se ha creado igualmente en tu equipo.")
-            return None
 
     def subir_a_wordpress(self, nombre, zip_path, page_paths):
         """Sube el flipbook a WordPress y crea un post publicado con el flipbook

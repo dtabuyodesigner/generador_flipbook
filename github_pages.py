@@ -3,7 +3,6 @@ import os
 import re
 import json
 import base64
-import time
 import unicodedata
 import urllib.request
 import urllib.error
@@ -153,8 +152,10 @@ def listar(token):
 def publicar(token, nombre, output_dir):
     s = slug(nombre)
     _asegurar_pages(token)
-    _asegurar_rama(token)
+    rama_sha = _asegurar_rama(token)
     parent_sha, blobs = _arbol_actual(token)
+    if parent_sha is None:  # rama recién creada y aún no propagada
+        parent_sha = rama_sha
     # conservar todo lo que NO sea de esta carpeta (reemplazo limpio)
     keep = [b for b in blobs if not b["path"].startswith(f"{s}/")]
     nuevos = []
@@ -166,7 +167,6 @@ def publicar(token, nombre, output_dir):
         nuevos.append({"path": repo_path, "mode": "100644",
                        "type": "blob", "sha": blob["sha"]})
     _commit_arbol(token, parent_sha, keep + nuevos, f"Publicar: {s}")
-    time.sleep(1.0)  # pequeño delay para que GitHub actualice
     return f"{PAGES_URL}/{s}/"
 
 
@@ -179,4 +179,3 @@ def borrar(token, nombre):
     if len(keep) == len(blobs):
         return  # no había nada que borrar
     _commit_arbol(token, parent_sha, keep, f"Borrar: {s}")
-    time.sleep(1.0)  # pequeño delay para que GitHub actualice
