@@ -24,6 +24,8 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 
+import github_pages
+
 # Configuración local (URL/usuario WordPress y, opcionalmente, la password)
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".flipbook_config.json")
 
@@ -727,182 +729,6 @@ window.addEventListener('load', initFlipbook);
 
 # ---------------------------------------------------------------------------
 # Publicación en GitHub Pages vía Git Data API (urllib, sin dependencias extra)
-# ---------------------------------------------------------------------------
-
-def _gh_headers(token):
-    """Cabeceras comunes para todas las peticiones a la API de GitHub."""
-    return {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "flipbook-generator",
-        "Content-Type": "application/json",
-    }
-
-
-def _gh_request(token, method, url, body=None):
-    """Petición HTTP a la API de GitHub. Devuelve el JSON decodificado.
-    Lanza urllib.error.HTTPError en caso de error HTTP."""
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    for k, v in _gh_headers(token).items():
-        req.add_header(k, v)
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _gh_error_legible(err):
-    """Extrae un mensaje legible de un urllib.error.HTTPError de GitHub."""
-    try:
-        cuerpo = err.read().decode("utf-8", "replace")
-        datos = json.loads(cuerpo)
-        msg = datos.get("message") or cuerpo
-        return f"HTTP {err.code}: {msg}"
-    except Exception:
-        return f"HTTP {getattr(err, 'code', '?')}: {err}"
-
-
-
-def _gh_get_ref_sha(token, owner, repo, branch):
-    """Obtiene el SHA del último commit de `branch`. Devuelve None si no existe."""
-    base = f"https://api.github.com/repos/{owner}/{repo}"
-    url = f"{base}/git/ref/heads/{branch}"
-    req = urllib.request.Request(url, method="GET")
-    for k, v in _gh_headers(token).items():
-        req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["object"]["sha"]
-    except urllib.error.HTTPError as e:
-        body = e.read()  # leer y descartar
-        if e.code == 404:
-            return None
-        raise
-
-
-def gh_asegurar_rama(token, owner, repo, branch):
-    """Asegura que la rama `branch` existe. Si no, la crea huérfana.
-    Devuelve el SHA del último commit de la rama."""
-    base = f"https://api.github.com/repos/{owner}/{repo}"
-    sha = _gh_get_ref_sha(token, owner, repo, branch)
-    if sha:
-        return sha
-
-    # Crear rama huérfana: blob vacío → tree → commit sin parents → ref
-    # Blob vacío
-    blob = _gh_request(token, "POST", f"{base}/git/blobs",
-                       {"content": "", "encoding": "utf-8"})
-
-    # Tree con un archivo .gitkeep
-    tree = _gh_request(token, "POST", f"{base}/git/trees", {
-        "tree": [{"path": ".gitkeep", "mode": "100644",
-                  "type": "blob", "sha": blob["sha"]}]
-    })
-
-    # Commit sin parents
-    commit = _gh_request(token, "POST", f"{base}/git/commits", {
-        "message": "Inicializar rama gh-pages",
-        "tree": tree["sha"],
-        "parents": [],
-    })
-
-    # Crear la ref
-    _gh_request(token, "POST", f"{base}/git/refs", {
-        "ref": f"refs/heads/{branch}",
-        "sha": commit["sha"],
-    })
-    return commit["sha"]
-
-
-def gh_asegurar_pages(token, owner, repo, branch):
-    """Activa GitHub Pages si no está activo. Ignora 409 (ya existe)."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/pages"
-    body = {"source": {"branch": branch, "path": "/"}}
-    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
-    for k, v in _gh_headers(token).items():
-        req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            resp.read()  # 201 Created — Pages activado
-    except urllib.error.HTTPError as e:
-        e.read()  # leer y descartar el cuerpo
-        if e.code in (409, 422):
-            # 409: ya estaba activo. 422: repos sin plan Team/Enterprise
-            # (Pages se activará igualmente cuando se empuje la rama gh-pages)
-            return
-        raise
-
-
-def gh_publicar_flipbook(token, owner, repo, branch, nombre, output_dir):
-    """Publica el flipbook en GitHub Pages usando la Git Data API.
-
-    Pasos:
-      1. Asegura que la rama `branch` existe.
-      2. Crea un blob por cada archivo (index.html + pages/*.png).
-      3. Crea un tree sobre el tree del último commit de la rama.
-      4. Crea un commit con ese tree.
-      5. Actualiza la ref de la rama.
-
-    Devuelve la URL pública: https://{owner}.github.io/{repo}/{nombre}/
-    """
-    base = f"https://api.github.com/repos/{owner}/{repo}"
-
-    # 1) Asegurar rama y obtener SHA del último commit
-    parent_sha = gh_asegurar_rama(token, owner, repo, branch)
-
-    # Obtener el tree SHA del commit padre para usar como base_tree
-    commit_data = _gh_request(token, "GET", f"{base}/git/commits/{parent_sha}")
-    base_tree_sha = commit_data["tree"]["sha"]
-
-    # 2) Recopilar archivos a subir
-    archivos = []
-    # index.html
-    index_path = os.path.join(output_dir, "index.html")
-    if os.path.exists(index_path):
-        archivos.append((f"{nombre}/index.html", index_path))
-    # pages/*.png
-    pages_dir = os.path.join(output_dir, "pages")
-    if os.path.isdir(pages_dir):
-        for fname in sorted(os.listdir(pages_dir)):
-            if fname.lower().endswith(".png"):
-                archivos.append((f"{nombre}/pages/{fname}", os.path.join(pages_dir, fname)))
-
-    # 3) Crear blobs
-    tree_entries = []
-    for gh_path, local_path in archivos:
-        with open(local_path, "rb") as f:
-            content_b64 = base64.b64encode(f.read()).decode("ascii")
-        blob = _gh_request(token, "POST", f"{base}/git/blobs",
-                           {"content": content_b64, "encoding": "base64"})
-        tree_entries.append({
-            "path": gh_path,
-            "mode": "100644",
-            "type": "blob",
-            "sha": blob["sha"],
-        })
-
-    # 4) Crear tree
-    tree = _gh_request(token, "POST", f"{base}/git/trees", {
-        "base_tree": base_tree_sha,
-        "tree": tree_entries,
-    })
-
-    # 5) Crear commit
-    commit = _gh_request(token, "POST", f"{base}/git/commits", {
-        "message": f"Publicar flipbook: {nombre}",
-        "tree": tree["sha"],
-        "parents": [parent_sha],
-    })
-
-    # 6) Actualizar ref
-    _gh_request(token, "PATCH", f"{base}/git/refs/heads/{branch}", {
-        "sha": commit["sha"],
-        "force": False,
-    })
-
-    return f"https://{owner}.github.io/{repo}/{nombre}/"
-
-
 def generar_preview_post_html(titulo, contenido, flipbook_src="index.html"):
     """Página local que SIMULA cómo quedará el post de WordPress: título +
     contenido + flipbook embebido (iframe al flipbook local) + botón de
@@ -1001,6 +827,11 @@ class CreadorFlipbook:
         self.nombre_output.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=2)
         self.nombre_output.insert(0, f"periodico_{datetime.now().strftime('%d_%m_%Y').lower()}")
 
+        self.slug_label = ttk.Label(sec_pdf, text="", foreground="gray")
+        self.slug_label.grid(row=4, column=0, sticky=tk.W, pady=(0, 2))
+        self.nombre_output.bind("<KeyRelease>", self._actualizar_slug_label)
+        self._actualizar_slug_label()
+
         # --- Sección 2: Título y descripción del periódico ----------------------
         sec_post = ttk.LabelFrame(left, text="2. Título y descripción del periódico", padding="8")
         sec_post.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=3)
@@ -1015,34 +846,18 @@ class CreadorFlipbook:
                                       font=("Segoe UI", 10), relief="solid", borderwidth=1)
         self.post_contenido.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(2, 2))
 
-        # --- Sección 3: Publicar en la web (GitHub Pages) -------------------
-        sec_gh = ttk.LabelFrame(left, text="3. Publicar en la web", padding="8")
-        sec_gh.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=3)
-        sec_gh.columnconfigure(0, weight=1)
-
-        ttk.Label(sec_gh, text="Token de GitHub (solo la primera vez):").grid(
-            row=0, column=0, sticky=tk.W, pady=(0, 2))
-        self.gh_token = ttk.Entry(sec_gh, show="*", width=44)
-        self.gh_token.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 4))
-        if cfg.get("github_token"):
-            self.gh_token.insert(0, _desofuscar(cfg.get("github_token")))
-
-        self.recordar = tk.BooleanVar(value=bool(cfg.get("github_token")))
-        ttk.Checkbutton(sec_gh, text="Recordar token (se guarda ofuscado en disco)",
-                        variable=self.recordar).grid(row=2, column=0, sticky=tk.W, pady=(0, 2))
-
         # --- Acción y estado ------------------------------------------------
-        ttk.Button(left, text="🔗 Generar enlace para la web", command=self.generar_flipbook).grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(6, 3))
+        ttk.Button(left, text="🔗 Generar enlace para la web", command=self.generar_flipbook).grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(6, 3))
 
         self.progress = ttk.Progressbar(left, mode='indeterminate')
-        self.progress.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=2)
+        self.progress.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=2)
 
         self.status_label = ttk.Label(left, text="Listo para empezar", foreground="blue")
-        self.status_label.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=2)
+        self.status_label.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=2)
 
         # Enlace público (se rellena tras publicar en GitHub Pages)
         url_frame = ttk.Frame(left)
-        url_frame.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(2, 0))
+        url_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(2, 0))
         url_frame.columnconfigure(0, weight=1)
         self.url_var = tk.StringVar()
         self.url_entry = ttk.Entry(url_frame, textvariable=self.url_var, state="readonly")
@@ -1052,7 +867,7 @@ class CreadorFlipbook:
         self.btn_copiar.grid(row=0, column=1)
 
         button_frame = ttk.Frame(left)
-        button_frame.grid(row=8, column=0, pady=(2, 0))
+        button_frame.grid(row=7, column=0, pady=(2, 0))
 
         self.btn_abrir = ttk.Button(button_frame, text="📂 Abrir Flipbook", command=self.abrir_flipbook, state=tk.DISABLED)
         self.btn_abrir.pack(side=tk.LEFT, padx=4)
@@ -1446,89 +1261,49 @@ code {{
             self.root.update()
             self.status_label.config(text="Enlace copiado ✅", foreground="green")
 
-    def _leer_token_github(self):
-        """Intenta leer el token GitHub: primero del campo UI; si vacío,
-        busca tokengenerarflipbook.txt junto al script o en su carpeta padre."""
-        token = self.gh_token.get().strip()
-        if token:
-            return token
+    def _actualizar_slug_label(self, event=None):
+        s = github_pages.slug(self.nombre_output.get())
+        self.slug_label.config(text=f"Se publicará como:  {s}")
 
-        # Buscar el archivo de token. En el .exe empaquetado __file__ apunta a
-        # un temporal, así que también miramos junto al ejecutable (sys.executable).
+    def _leer_token_github(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        candidates = [
-            os.path.join(exe_dir, "tokengenerarflipbook.txt"),
-            os.path.join(script_dir, "tokengenerarflipbook.txt"),
-            os.path.join(os.path.dirname(script_dir), "tokengenerarflipbook.txt"),
-        ]
-        for path in candidates:
+        for path in (os.path.join(exe_dir, "tokengenerarflipbook.txt"),
+                     os.path.join(script_dir, "tokengenerarflipbook.txt"),
+                     os.path.join(os.path.dirname(script_dir), "tokengenerarflipbook.txt")):
             if os.path.exists(path):
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        tok = f.read().strip()
+                    tok = open(path, encoding="utf-8").read().strip()
                     if tok:
                         return tok
                 except Exception:
                     pass
+        cfg = cargar_config()
+        if cfg.get("github_token"):
+            return _desofuscar(cfg["github_token"])
         return None
 
     def subir_a_github(self, nombre, output_dir):
-        """Publica el flipbook en GitHub Pages. Devuelve la URL pública o None.
-        El flipbook local nunca se rompe aunque falle la subida."""
+        """Publica en GitHub Pages. Devuelve la URL o None. El flipbook local
+        nunca se rompe aunque falle la subida."""
         token = self._leer_token_github()
         if not token:
             messagebox.showwarning(
-                "Token no encontrado",
-                "No se encontró el token de GitHub.\n\n"
-                "Pégalo en el campo 'Token de GitHub' o coloca el archivo\n"
-                "'tokengenerarflipbook.txt' junto al script.\n\n"
-                "El flipbook local se ha creado correctamente.")
+                "No se pudo publicar",
+                "No se ha podido publicar en internet.\n\n"
+                "Revisa tu conexión a internet. Si el problema sigue, avisa a Dani.\n\n"
+                "El periódico se ha creado igualmente en tu equipo.")
             return None
-
-        # Guardar token si "Recordar" está activo
-        if self.recordar.get():
-            cfg = cargar_config()
-            cfg["github_token"] = _ofuscar(token)
-            guardar_config(cfg)
-
-        owner = "dtabuyodesigner"
-        repo = "generador_flipbook"
-        branch = "gh-pages"
-
         try:
-            self.status_label.config(text="Publicando en la web...", foreground="orange")
+            self.status_label.config(text="Publicando en internet...", foreground="orange")
             self.root.update()
-
-            # Activar GitHub Pages si no está activo
-            gh_asegurar_pages(token, owner, repo, branch)
-
-            self.status_label.config(text="Subiendo páginas...", foreground="orange")
-            self.root.update()
-
-            url = gh_publicar_flipbook(token, owner, repo, branch, nombre, output_dir)
-
-            self.status_label.config(text="¡Publicado en la web! ✅", foreground="green")
-            self.root.update()
-            return url
-
-        except urllib.error.HTTPError as e:
+            return github_pages.publicar(token, nombre, output_dir)
+        except Exception:
             messagebox.showwarning(
-                "GitHub no disponible",
-                "El flipbook se creó correctamente en local, pero falló la publicación en GitHub.\n\n"
-                f"Error: {_gh_error_legible(e)}")
-            return None
-        except urllib.error.URLError as e:
-            messagebox.showwarning(
-                "GitHub no disponible",
-                "El flipbook se creó correctamente en local, pero no se pudo conectar con GitHub.\n\n"
-                f"Comprueba la conexión.\n\nError: {e.reason}")
-            return None
-        except Exception as e:
-            messagebox.showwarning(
-                "GitHub no disponible",
-                "El flipbook se creó correctamente en local, pero falló la publicación en GitHub.\n\n"
-                f"Error: {str(e)}")
+                "No se pudo publicar",
+                "No se ha podido publicar en internet.\n\n"
+                "Revisa tu conexión a internet. Si el problema sigue, avisa a Dani.\n\n"
+                "El periódico se ha creado igualmente en tu equipo.")
             return None
 
     def subir_a_wordpress(self, nombre, zip_path, page_paths):
