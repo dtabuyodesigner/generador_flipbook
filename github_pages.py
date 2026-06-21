@@ -16,7 +16,7 @@ def _repo_desde_archivo(directorios):
         ruta = os.path.join(d, "repositorio.txt")
         if os.path.exists(ruta):
             try:
-                txt = open(ruta, encoding="utf-8").read().strip()
+                txt = open(ruta, encoding="utf-8-sig").read().strip()
             except Exception:
                 continue
             if "/" in txt:

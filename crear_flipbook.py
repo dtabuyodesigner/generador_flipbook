@@ -1640,11 +1640,25 @@ code {{
         """Publica devolviendo URL o None; nunca lanza (corre en hilo)."""
         token = self._leer_token_github()
         if not token:
+            self._log_diagnostico("No se encontró el archivo de acceso junto a la app.")
             return None
         try:
             return github_pages.publicar(token, nombre, output_dir)
-        except Exception:
+        except Exception as e:
+            self._log_diagnostico(f"{type(e).__name__}: {e}")
             return None
+
+    def _log_diagnostico(self, mensaje):
+        """Guarda el motivo real de un fallo de publicación en un archivo junto
+        al .exe (para depurar). No incluye el token: ni urllib ni GitHub lo
+        ponen en el texto del error."""
+        try:
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            ruta = os.path.join(exe_dir, "diagnostico_publicacion.txt")
+            with open(ruta, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {mensaje}\n")
+        except Exception:
+            pass
 
     def _fin_publicacion(self, url, url_corta, n_paginas, output_dir):
         self.progress.stop()
@@ -1750,7 +1764,7 @@ code {{
                      os.path.join(os.path.dirname(script_dir), "tokengenerarflipbook.txt")):
             if os.path.exists(path):
                 try:
-                    tok = open(path, encoding="utf-8").read().strip()
+                    tok = open(path, encoding="utf-8-sig").read().strip()
                     if tok:
                         return tok
                 except Exception:
