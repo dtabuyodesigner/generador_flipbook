@@ -71,6 +71,13 @@ if exist tokengenerarflipbook.txt (
     echo Debes copiarlo a la carpeta dist\ junto al .exe antes de usarlo.
 )
 
+rem Opcional: repositorio.txt (owner/repo) para publicar en otra cuenta/organizacion
+rem sin recompilar. Si no existe, se usa el repo por defecto.
+if exist repositorio.txt (
+    copy /Y repositorio.txt dist\repositorio.txt >nul
+    echo repositorio.txt copiado a dist\
+)
+
 if exist build rmdir /s /q build
 if exist GeneradorPeriodico.spec del GeneradorPeriodico.spec
 

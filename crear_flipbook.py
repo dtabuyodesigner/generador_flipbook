@@ -1506,7 +1506,7 @@ code {{
         <div class="step-content">
             <h3>Copia el enlace</h3>
             <p>En la app, pulsa el botón <strong>"📋 Copiar enlace"</strong>. Tu periódico ya está publicado en internet en esta dirección:</p>
-            <p><code>https://dtabuyodesigner.github.io/generador_flipbook/{nombre}/</code></p>
+            <p><code>{github_pages.PAGES_URL}/{github_pages.slug(nombre)}/</code></p>
         </div>
     </div>
 
