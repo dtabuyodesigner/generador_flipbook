@@ -25,17 +25,17 @@ if not exist github_pages.py (
     exit /b 1
 )
 
-rem --- Detectar Poppler para empaquetarlo DENTRO del .exe ---
-rem Asi el equipo de Pilar no necesita instalar nada (solo el .exe + el token).
-set "POPPLER_BIN="
-if exist "C:\poppler\Library\bin\pdftoppm.exe" set "POPPLER_BIN=C:\poppler\Library\bin"
-if not defined POPPLER_BIN if exist "C:\poppler\bin\pdftoppm.exe" set "POPPLER_BIN=C:\poppler\bin"
-if not defined POPPLER_BIN if exist "C:\Program Files\poppler\Library\bin\pdftoppm.exe" set "POPPLER_BIN=C:\Program Files\poppler\Library\bin"
+rem --- Localizar Poppler (se COPIA junto al .exe, NO se mete dentro) ---
+rem Meter Poppler dentro del .exe falla por DLLs (gio/glib). Copiarlo al lado
+rem funciona igual que el Poppler suelto, que ya sabemos que va bien.
+set "POPPLER_ROOT="
+if exist "C:\poppler\Library\bin\pdftoppm.exe" set "POPPLER_ROOT=C:\poppler"
+if not defined POPPLER_ROOT if exist "C:\poppler\bin\pdftoppm.exe" set "POPPLER_ROOT=C:\poppler"
+if not defined POPPLER_ROOT if exist "C:\Program Files\poppler\Library\bin\pdftoppm.exe" set "POPPLER_ROOT=C:\Program Files\poppler"
 
-if not defined POPPLER_BIN (
+if not defined POPPLER_ROOT (
     echo AVISO: no encontre Poppler en C:\poppler.
-    echo El .exe se creara SIN Poppler dentro, y el equipo de Pilar necesitaria
-    echo instalar Poppler aparte. Para empaquetarlo, instala Poppler en C:\poppler
+    echo Sin Poppler la app no podra leer PDFs. Instala Poppler en C:\poppler
     echo - mira INSTRUCCIONES_WINDOWS.md - y vuelve a ejecutar este build.
     echo.
     pause
@@ -48,18 +48,20 @@ set "ICON_ARG="
 if exist icono.ico set "ICON_ARG=--icon=icono.ico"
 
 echo Construyendo el .exe, esto tarda 1-2 minutos...
-if defined POPPLER_BIN (
-    echo Empaquetando Poppler desde: %POPPLER_BIN%
-    pyinstaller --onefile --windowed --name "GeneradorPeriodico" --clean %ICON_ARG% --add-data "%POPPLER_BIN%;poppler/bin" crear_flipbook.py
-) else (
-    pyinstaller --onefile --windowed --name "GeneradorPeriodico" --clean %ICON_ARG% crear_flipbook.py
-)
+pyinstaller --onefile --windowed --name "GeneradorPeriodico" --clean %ICON_ARG% crear_flipbook.py
 
 if errorlevel 1 (
     echo.
     echo ERROR: fallo la construccion del .exe.
     pause
     exit /b 1
+)
+
+rem --- Copiar Poppler JUNTO al .exe (la app lo busca en dist\poppler) ---
+if defined POPPLER_ROOT (
+    echo Copiando Poppler a dist\poppler ...
+    xcopy /E /I /Y "%POPPLER_ROOT%" "dist\poppler" >nul
+    echo Poppler copiado a dist\poppler
 )
 
 rem El token es necesario para publicar en internet; va JUNTO al .exe.
@@ -71,8 +73,7 @@ if exist tokengenerarflipbook.txt (
     echo Debes copiarlo a la carpeta dist\ junto al .exe antes de usarlo.
 )
 
-rem Opcional: repositorio.txt (owner/repo) para publicar en otra cuenta/organizacion
-rem sin recompilar. Si no existe, se usa el repo por defecto.
+rem Opcional: repositorio.txt (owner/repo) para publicar en otra cuenta/organizacion.
 if exist repositorio.txt (
     copy /Y repositorio.txt dist\repositorio.txt >nul
     echo repositorio.txt copiado a dist\
@@ -84,9 +85,10 @@ if exist GeneradorPeriodico.spec del GeneradorPeriodico.spec
 echo.
 echo ============================================
 echo  EXITO!
-echo  El .exe esta en: dist\GeneradorPeriodico.exe
-if defined POPPLER_BIN echo  Poppler va dentro del .exe, Pilar no instala nada.
-echo  Reparte la carpeta dist\ completa:
-echo  GeneradorPeriodico.exe + tokengenerarflipbook.txt
+echo  Reparte la carpeta dist\ COMPLETA:
+echo  - GeneradorPeriodico.exe
+echo  - carpeta poppler
+echo  - tokengenerarflipbook.txt
+echo  - repositorio.txt
 echo ============================================
 pause
