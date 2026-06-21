@@ -86,6 +86,26 @@ Uso diario de Pilar: archivo **`GUIA_PILAR.md`**.
 
 ---
 
+## 📤 Compartir el programa con otros Windows
+
+El `.exe` es **autónomo**: lleva dentro Python y Poppler, así que **corre en
+cualquier otro PC con Windows sin instalar nada**. Solo copias el archivo. Pero:
+
+- **Para publicar en internet**, el `.exe` necesita el `tokengenerarflipbook.txt`
+  **en la misma carpeta**. Compártelos **juntos**.
+- **⚠️ Seguridad:** quien tenga el `.exe` **+ el token** puede **publicar y
+  borrar** periódicos en tu repositorio. Para Pilar es lo previsto; **no lo
+  repartas a mucha gente**. Si solo quieres que alguien **trabaje en local**
+  (unir/dividir PDF, generar el flipbook), compártele el `.exe` **sin** el token:
+  no podrá publicar, pero tampoco hay riesgo.
+- **Convertir Word** (pestaña "Preparar PDF" con `.docx`): cada PC necesita
+  **Word o LibreOffice** instalado. Los PDF se unen/dividen igual sin ellos.
+- **Aviso la 1ª vez:** al ser de "autor desconocido", Windows SmartScreen o el
+  antivirus puede avisar → **"Más información → Ejecutar de todas formas"**. Es
+  normal en programas caseros.
+
+---
+
 ## ❓ Si algo falla
 
 - **"Python no esta instalado"** → repite el paso 1 y marca **«Add Python to
