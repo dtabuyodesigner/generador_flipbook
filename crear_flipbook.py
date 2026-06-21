@@ -51,7 +51,7 @@ except ImportError:
     HAS_IMAGETK = False
 
 
-def generar_html(titulo, num_pages, descripcion=""):
+def generar_html(titulo, num_pages, descripcion="", montado_por=""):
     """Genera el HTML del flipbook con StPageFlip y fixes de navegación.
 
     `descripcion` es texto opcional que se muestra como subtítulo en la
@@ -158,7 +158,21 @@ def generar_html(titulo, num_pages, descripcion=""):
         .page-right-side .page-number {
             right: 12px;
         }
-        
+
+        .credito-contraportada {
+            position: absolute;
+            bottom: 14px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            color: #333;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            font-size: 0.8em;
+            font-style: italic;
+            padding: 4px 8px;
+            pointer-events: none;
+        }
+
         .controls {
             display: flex;
             gap: 15px;
@@ -257,6 +271,7 @@ def generar_html(titulo, num_pages, descripcion=""):
     
     <script>
         const totalPages = __NUM_PAGES__;
+        const montadoPor = "__MONTADO_POR__";
         let pageFlip = null;
         let currentPageIndex = 0;
         
@@ -323,7 +338,14 @@ def generar_html(titulo, num_pages, descripcion=""):
                 img.src = 'pages/page_' + String(i).padStart(3, '0') + '.png';
                 img.alt = 'Página ' + i;
                 div.appendChild(img);
-                
+
+                if (i === totalPages && montadoPor) {
+                    const cred = document.createElement('div');
+                    cred.className = 'credito-contraportada';
+                    cred.textContent = 'Montado por ' + montadoPor;
+                    div.appendChild(cred);
+                }
+
                 // Número de página (excepto en portada y contraportada)
                 if (i !== 1 && i !== totalPages) {
                     // Páginas pares (2, 4, 6...) van a la IZQUIERDA del libro
@@ -494,6 +516,8 @@ def generar_html(titulo, num_pages, descripcion=""):
     html = html.replace("__TITULO__", titulo)
     html = html.replace("__SUBTITULO__", subtitulo)
     html = html.replace("__NUM_PAGES__", str(num_pages))
+    montado_js = (montado_por or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    html = html.replace("__MONTADO_POR__", montado_js)
 
     return html
 
@@ -881,6 +905,11 @@ class CreadorFlipbook:
         self.post_contenido = tk.Text(sec_post, height=3, width=44, wrap=tk.WORD,
                                       font=("Segoe UI", 10), relief="solid", borderwidth=1)
         self.post_contenido.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(2, 2))
+
+        ttk.Label(sec_post, text="Montado por (sale en la contraportada):").grid(row=4, column=0, sticky=tk.W)
+        self.montado_por = ttk.Entry(sec_post, width=44)
+        self.montado_por.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(2, 4))
+        self.montado_por.insert(0, cargar_config().get("montado_por", "Pilar Huerta Checa"))
 
         # --- Acción y estado ------------------------------------------------
         self.btn_generar = ttk.Button(left, text="🔗 Generar enlace para la web", command=self.generar_flipbook)
@@ -1287,7 +1316,8 @@ class CreadorFlipbook:
 
             html_path = os.path.join(tmp, "index.html")
             with open(html_path, "w", encoding="utf-8") as f:
-                f.write(generar_html(titulo_post, len(imgs), contenido_post))
+                html_content = generar_html(titulo_post, len(imgs), contenido_post, self.montado_por.get().strip())
+                f.write(html_content)
 
             # Página de vista previa (título + flipbook)
             preview_path = os.path.join(tmp, "preview_post.html")
@@ -1407,7 +1437,9 @@ class CreadorFlipbook:
             
             titulo_pag = self.post_titulo.get().strip() or nombre
             descripcion = self.post_contenido.get("1.0", tk.END).strip()
-            html_content = generar_html(titulo_pag, len(images), descripcion)
+            montado = self.montado_por.get().strip()
+            cfg_g = cargar_config(); cfg_g["montado_por"] = montado; guardar_config(cfg_g)
+            html_content = generar_html(titulo_pag, len(images), descripcion, montado)
             html_path = os.path.join(output_dir, "index.html")
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html_content)
