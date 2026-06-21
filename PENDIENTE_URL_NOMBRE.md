@@ -20,19 +20,20 @@ no lo lleve.
 
 ### A. Organización de GitHub con nombre del cole (recomendada)
 - Gratis. La URL pasa a `https://<nombre-org>.github.io/generador_flipbook/<periodico>/`.
-- Pasos:
+- **Ya NO hace falta recompilar el `.exe`**: el `owner/repo` se lee de un archivo
+  `repositorio.txt` junto al `.exe` (formato `owner/repo`). Si no existe, usa el
+  valor por defecto (`dtabuyodesigner/generador_flipbook`).
+- Pasos cuando se decida:
   1. Crear una organización gratuita en GitHub con un nombre neutro/del cole
      (p. ej. `ceip-virgen-hoz` o `periodico-cole`).
   2. **Transferir** el repo `generador_flipbook` a esa organización (Settings →
      Transfer ownership). Conserva la rama `gh-pages` y todos los periódicos.
   3. Generar un **token fine-grained nuevo** para el repo en la org
-     (Contents: Read and write, Pages: Read and write) y ponerlo en
+     (Contents: Read and write, Pages: Read and write) y reemplazar
      `tokengenerarflipbook.txt`.
-  4. En el código, cambiar la constante `OWNER` (en `github_pages.py` y en
-     `crear_flipbook.py` donde aparezca) al nombre de la organización.
-  5. Republicar (o, si se transfirió el repo, los enlaces ya cuelgan de la org;
-     solo cambia el prefijo del dominio).
-- Esfuerzo: pequeño. Lo aplica Dani en cuanto Pilar diga el nombre de la org.
+  4. Crear (o editar) `repositorio.txt` junto al `.exe` con `<nombre-org>/generador_flipbook`.
+  5. Listo: la app ya publica/lee de la organización. **Sin recompilar.**
+- Esfuerzo: muy pequeño (editar dos archivos de texto junto al `.exe`).
 
 ### B. Dominio propio
 - `https://periodicocole.es/<periodico>/`. ~12 €/año + configurar DNS (CNAME a
