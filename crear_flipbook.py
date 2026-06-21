@@ -802,8 +802,15 @@ class CreadorFlipbook:
 
         cfg = cargar_config()
 
+        # Pie con el crédito/usuario (se empaqueta antes que el notebook para que
+        # quede fijo abajo y el notebook ocupe el resto).
+        pie = ttk.Frame(root)
+        pie.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(pie, text="📰 Generador de Periódicos  ·  by dtabuyodesigner",
+                  foreground="gray").pack(side=tk.RIGHT, padx=10, pady=3)
+
         self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         self.tab_preparar = ttk.Frame(self.notebook)
         self.tab_flipbook = ttk.Frame(self.notebook)
