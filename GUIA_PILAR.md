@@ -62,6 +62,14 @@ Para quedarte solo con algunas páginas de un PDF o trocearlo.
    - Al terminar aparecen **dos enlaces**: **Corto** y **Largo**.
 7. Pulsa **«📋 Copiar»** en el **enlace corto** (es el recomendado).
 
+> **✨ Enlaces pinchables (vídeos, webs).** Si en el Word/PDF pones un
+> **hipervínculo de verdad** (seleccionas el texto → *Insertar → Vínculo* y pegas
+> la dirección del vídeo o la web), en el periódico publicado ese texto **se podrá
+> pinchar** y abrirá el enlace en otra pestaña. No tienes que hacer nada más: la app
+> lo detecta solo. Al pasar el ratón por encima se ilumina un poco para que se note.
+> (Si solo escribes la dirección como texto normal, sin insertar el vínculo, no será
+> pinchable.)
+
 ## Ponerlo en la web del colegio (Drupal)
 
 1. Entra en el portal del colegio.
